@@ -68,3 +68,51 @@ resource "ctrlplane_job_agent" "test" {
 }
 `, testAccProviderConfig(), name, delaySeconds, status)
 }
+
+func TestAccJobAgentResource_HTTPPull(t *testing.T) {
+	name := fmt.Sprintf("tf-acc-ja-pull-%d", time.Now().UnixNano())
+	updatedName := name + "-updated"
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccJobAgentResourceConfigHTTPPull(name),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"ctrlplane_job_agent.pull",
+						tfjsonpath.New("id"),
+						knownvalue.NotNull(),
+					),
+					statecheck.ExpectKnownValue(
+						"ctrlplane_job_agent.pull",
+						tfjsonpath.New("name"),
+						knownvalue.StringExact(name),
+					),
+				},
+			},
+			{
+				Config: testAccJobAgentResourceConfigHTTPPull(updatedName),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"ctrlplane_job_agent.pull",
+						tfjsonpath.New("name"),
+						knownvalue.StringExact(updatedName),
+					),
+				},
+			},
+		},
+	})
+}
+
+func testAccJobAgentResourceConfigHTTPPull(name string) string {
+	return fmt.Sprintf(`
+%s
+resource "ctrlplane_job_agent" "pull" {
+  name = %q
+
+  http_pull {}
+}
+`, testAccProviderConfig(), name)
+}
