@@ -25,6 +25,7 @@ description: |-
 - `argocd` (Block List) ArgoCD job agent configuration (see [below for nested schema](#nestedblock--argocd))
 - `custom` (Block List) Custom job agent configuration (see [below for nested schema](#nestedblock--custom))
 - `github` (Block List) GitHub job agent configuration (see [below for nested schema](#nestedblock--github))
+- `http_pull` (Block List) HTTP pull job agent configuration. An external agent polls for and claims its jobs over the REST API; ctrlplane does not push work to it. Takes no configuration. (see [below for nested schema](#nestedblock--http_pull))
 - `metadata` (Map of String) The metadata of the job agent
 - `terraform_cloud` (Block List) Terraform Cloud job agent configuration (see [below for nested schema](#nestedblock--terraform_cloud))
 - `test_runner` (Block List) Test runner job agent configuration (see [below for nested schema](#nestedblock--test_runner))
@@ -76,6 +77,10 @@ Required:
 - `installation_id` (Number) GitHub app installation ID
 - `owner` (String) GitHub repository owner
 - `repo` (String) GitHub repository name
+
+
+<a id="nestedblock--http_pull"></a>
+### Nested Schema for `http_pull`
 
 
 <a id="nestedblock--terraform_cloud"></a>

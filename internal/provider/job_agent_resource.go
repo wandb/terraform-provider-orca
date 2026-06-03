@@ -230,6 +230,12 @@ func (r *JobAgentResource) Schema(ctx context.Context, req resource.SchemaReques
 					},
 				},
 			},
+			"http_pull": schema.ListNestedBlock{
+				Description: "HTTP pull job agent configuration. An external agent polls for and claims its jobs over the REST API; ctrlplane does not push work to it. Takes no configuration.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{},
+				},
+			},
 		},
 	}
 }
@@ -245,14 +251,14 @@ func (r *JobAgentResource) ValidateConfig(ctx context.Context, req resource.Vali
 	if count == 0 {
 		resp.Diagnostics.AddError(
 			"Invalid job agent configuration",
-			"Exactly one of custom, argocd, github, terraform_cloud, or test_runner must be set.",
+			"Exactly one of custom, argocd, argo_workflow, github, terraform_cloud, test_runner, or http_pull must be set.",
 		)
 		return
 	}
 	if count > 1 {
 		resp.Diagnostics.AddError(
 			"Invalid job agent configuration",
-			"Only one of custom, argocd, github, terraform_cloud, or test_runner can be set.",
+			"Only one of custom, argocd, argo_workflow, github, terraform_cloud, test_runner, or http_pull can be set.",
 		)
 	}
 }
@@ -493,6 +499,7 @@ type JobAgentResourceModel struct {
 	GitHub         []JobAgentGitHubModel       `tfsdk:"github"`
 	TerraformCloud []JobAgentTFCModel          `tfsdk:"terraform_cloud"`
 	TestRunner     []JobAgentTestRunnerModel   `tfsdk:"test_runner"`
+	HTTPPull       []JobAgentHTTPPullModel     `tfsdk:"http_pull"`
 }
 
 type JobAgentCustomModel struct {
@@ -535,6 +542,11 @@ type JobAgentTestRunnerModel struct {
 	Status       types.String `tfsdk:"status"`
 }
 
+// JobAgentHTTPPullModel configures the http-pull agent. It carries no
+// configuration; an external agent polls for and claims its jobs over the REST
+// API. The presence of the block selects the agent type.
+type JobAgentHTTPPullModel struct{}
+
 func countJobAgentConfigs(data JobAgentResourceModel) int {
 	count := 0
 	if len(data.Custom) > 0 {
@@ -553,6 +565,9 @@ func countJobAgentConfigs(data JobAgentResourceModel) int {
 		count++
 	}
 	if len(data.TestRunner) > 0 {
+		count++
+	}
+	if len(data.HTTPPull) > 0 {
 		count++
 	}
 	return count
@@ -627,6 +642,9 @@ func jobAgentConfigFromModel(data JobAgentResourceModel) (string, *map[string]in
 			cfg["status"] = testRunner.Status.ValueString()
 		}
 		return "test-runner", &cfg, nil
+	case len(data.HTTPPull) > 0:
+		cfg := map[string]interface{}{}
+		return "http-pull", &cfg, nil
 	default:
 		return "", nil, nil
 	}
@@ -638,6 +656,7 @@ func setJobAgentBlocksFromAPI(data *JobAgentResourceModel, jobType string, confi
 	data.GitHub = nil
 	data.TerraformCloud = nil
 	data.TestRunner = nil
+	data.HTTPPull = nil
 	data.Custom = nil
 
 	switch jobType {
@@ -697,6 +716,8 @@ func setJobAgentBlocksFromAPI(data *JobAgentResourceModel, jobType string, confi
 			testRunner.Status = types.StringValue(fmt.Sprint(status))
 		}
 		data.TestRunner = []JobAgentTestRunnerModel{testRunner}
+	case "http-pull":
+		data.HTTPPull = []JobAgentHTTPPullModel{{}}
 	default:
 		data.Custom = []JobAgentCustomModel{
 			{
