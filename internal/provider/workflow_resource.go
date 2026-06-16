@@ -7,8 +7,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -16,6 +17,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 var _ resource.Resource = &WorkflowResource{}
@@ -129,36 +131,31 @@ func (r *WorkflowResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	inputs, err := parseWorkflowInputs(data.Inputs)
+	inputs, err := workflowInputsToValue(data.Inputs)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid inputs", err.Error())
 		return
 	}
 
-	body := api.CreateWorkflowJSONRequestBody{
-		Name:      data.Name.ValueString(),
-		Slug:      optionalSlug(data.Slug),
-		Inputs:    inputs,
-		JobAgents: workflowJobAgentsFromModel(data.JobAgents),
-	}
-
-	createResp, err := r.workspace.Client.CreateWorkflowWithResponse(ctx, r.workspace.ID.String(), body)
+	jobAgents, err := workflowJobAgentsToValue(data.JobAgents)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create workflow", err.Error())
+		resp.Diagnostics.AddError("Invalid job agents", err.Error())
 		return
 	}
 
-	if createResp.StatusCode() != http.StatusCreated {
-		resp.Diagnostics.AddError("Failed to create workflow", formatResponseError(createResp.StatusCode(), createResp.Body))
+	created, err := r.workspace.Workflow.CreateWorkflow(ctx, connect.NewRequest(&apiv1.CreateWorkflowRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+		Slug:        optionalStringPtr(data.Slug),
+		Inputs:      inputs,
+		JobAgents:   jobAgents,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to create workflow", err)
 		return
 	}
 
-	if createResp.JSON201 == nil {
-		resp.Diagnostics.AddError("Failed to create workflow", "Empty response from server")
-		return
-	}
-
-	setWorkflowModelFromAPI(&data, createResp.JSON201)
+	setWorkflowModelFromProto(&data, created.Msg)
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -169,27 +166,20 @@ func (r *WorkflowResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	getResp, err := r.workspace.Client.GetWorkflowWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
+	got, err := r.workspace.Workflow.GetWorkflow(ctx, connect.NewRequest(&apiv1.GetWorkflowRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		WorkflowId:  data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read workflow", err.Error())
-		return
-	}
-
-	switch getResp.StatusCode() {
-	case http.StatusOK:
-		if getResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read workflow", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to read workflow", formatResponseError(getResp.StatusCode(), getResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to read workflow", err)
 		return
 	}
 
-	setWorkflowModelFromAPI(&data, getResp.JSON200)
+	setWorkflowModelFromProto(&data, got.Msg)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -200,36 +190,32 @@ func (r *WorkflowResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	inputs, err := parseWorkflowInputs(data.Inputs)
+	inputs, err := workflowInputsToValue(data.Inputs)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid inputs", err.Error())
 		return
 	}
 
-	body := api.UpdateWorkflowJSONRequestBody{
-		Name:      data.Name.ValueString(),
-		Slug:      optionalSlug(data.Slug),
-		Inputs:    inputs,
-		JobAgents: workflowJobAgentsFromModel(data.JobAgents),
-	}
-
-	updateResp, err := r.workspace.Client.UpdateWorkflowWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString(), body)
+	jobAgents, err := workflowJobAgentsToValue(data.JobAgents)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to update workflow", err.Error())
+		resp.Diagnostics.AddError("Invalid job agents", err.Error())
 		return
 	}
 
-	if updateResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update workflow", formatResponseError(updateResp.StatusCode(), updateResp.Body))
+	updated, err := r.workspace.Workflow.UpdateWorkflow(ctx, connect.NewRequest(&apiv1.UpdateWorkflowRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		WorkflowId:  data.ID.ValueString(),
+		Name:        data.Name.ValueString(),
+		Slug:        optionalStringPtr(data.Slug),
+		Inputs:      inputs,
+		JobAgents:   jobAgents,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to update workflow", err)
 		return
 	}
 
-	if updateResp.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to update workflow", "Empty response from server")
-		return
-	}
-
-	setWorkflowModelFromAPI(&data, updateResp.JSON202)
+	setWorkflowModelFromProto(&data, updated.Msg)
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -240,65 +226,72 @@ func (r *WorkflowResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	deleteResp, err := r.workspace.Client.DeleteWorkflowWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete workflow", err.Error())
+	_, err := r.workspace.Workflow.DeleteWorkflow(ctx, connect.NewRequest(&apiv1.DeleteWorkflowRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		WorkflowId:  data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete workflow", err)
 		return
-	}
-
-	switch deleteResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusNotFound:
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to delete workflow", formatResponseError(deleteResp.StatusCode(), deleteResp.Body))
 	}
 }
 
 // --- helpers ---
 
-// normalizeInputsJSON re-marshals workflow inputs through a generic structure
-// so that JSON key order is deterministic (Go sorts map keys alphabetically).
-// This prevents Terraform from detecting spurious diffs due to key ordering.
-func normalizeInputsJSON(inputs []api.WorkflowInput) string {
-	raw, err := json.Marshal(inputs)
+// workflowInputsToValue converts the model's JSON-encoded inputs string into a
+// *structpb.Value for transport. An empty/null/unknown value or "[]" yields an
+// empty-list Value so the server receives a deterministic, non-nil inputs field.
+func workflowInputsToValue(raw types.String) (*structpb.Value, error) {
+	str := ""
+	if !raw.IsNull() && !raw.IsUnknown() {
+		str = raw.ValueString()
+	}
+	if str == "" || str == "[]" {
+		return structpb.NewValue([]any{})
+	}
+	var v any
+	if err := json.Unmarshal([]byte(str), &v); err != nil {
+		return nil, fmt.Errorf("failed to parse inputs JSON: %w", err)
+	}
+	return structpb.NewValue(v)
+}
+
+// workflowInputsFromValue renders the proto inputs Value back into the model's
+// normalized JSON string. nil or a non-list Value yields "[]", preserving the
+// prior representation where Inputs is always a JSON array string.
+func workflowInputsFromValue(val *structpb.Value) types.String {
+	if val == nil {
+		return types.StringValue("[]")
+	}
+	return types.StringValue(normalizeInputsValue(val.AsInterface()))
+}
+
+// normalizeInputsValue re-marshals the decoded inputs through a []map[string]any
+// so JSON key order is deterministic (Go sorts map keys alphabetically). This
+// prevents Terraform from detecting spurious diffs due to key ordering and
+// mirrors the previous normalizeInputsJSON behavior.
+func normalizeInputsValue(v any) string {
+	raw, err := json.Marshal(v)
 	if err != nil {
 		return "[]"
 	}
-
 	var normalized []map[string]interface{}
 	if err := json.Unmarshal(raw, &normalized); err != nil {
 		return "[]"
 	}
-
 	out, err := json.Marshal(normalized)
 	if err != nil {
 		return "[]"
 	}
-
 	return string(out)
 }
 
-func parseWorkflowInputs(raw types.String) ([]api.WorkflowInput, error) {
-	if raw.IsNull() || raw.IsUnknown() {
-		return []api.WorkflowInput{}, nil
-	}
-	str := raw.ValueString()
-	if str == "" || str == "[]" {
-		return []api.WorkflowInput{}, nil
-	}
-	var inputs []api.WorkflowInput
-	if err := json.Unmarshal([]byte(str), &inputs); err != nil {
-		return nil, fmt.Errorf("failed to parse inputs JSON: %w", err)
-	}
-	return inputs, nil
-}
-
-func workflowJobAgentsFromModel(agents []WorkflowJobAgentModel) []api.CreateWorkflowJobAgent {
-	result := make([]api.CreateWorkflowJobAgent, len(agents))
+// workflowJobAgentsToValue converts the typed job-agent blocks into a
+// *structpb.Value wrapping a list of objects for transport.
+func workflowJobAgentsToValue(agents []WorkflowJobAgentModel) (*structpb.Value, error) {
+	list := make([]any, len(agents))
 	for i, a := range agents {
-		config := make(map[string]interface{})
+		config := map[string]any{}
 		if !a.Config.IsNull() && !a.Config.IsUnknown() {
 			var decoded map[string]string
 			_ = a.Config.ElementsAs(context.Background(), &decoded, false)
@@ -306,39 +299,57 @@ func workflowJobAgentsFromModel(agents []WorkflowJobAgentModel) []api.CreateWork
 				config[k] = v
 			}
 		}
-		result[i] = api.CreateWorkflowJobAgent{
-			Name:     a.Name.ValueString(),
-			Ref:      a.Ref.ValueString(),
-			Config:   config,
-			Selector: a.Selector.ValueString(),
+		list[i] = map[string]any{
+			"name":     a.Name.ValueString(),
+			"ref":      a.Ref.ValueString(),
+			"config":   config,
+			"selector": a.Selector.ValueString(),
 		}
 	}
-	return result
+	return structpb.NewValue(list)
 }
 
-func optionalSlug(s types.String) *string {
-	if s.IsNull() || s.IsUnknown() {
-		return nil
+// workflowJobAgentsFromValue rebuilds the typed job-agent blocks from the proto
+// JobAgents Value. A nil or non-list Value yields an empty slice.
+func workflowJobAgentsFromValue(val *structpb.Value) []WorkflowJobAgentModel {
+	if val == nil {
+		return []WorkflowJobAgentModel{}
 	}
-	v := s.ValueString()
-	return &v
-}
-
-func setWorkflowModelFromAPI(data *WorkflowResourceModel, w *api.Workflow) {
-	data.ID = types.StringValue(w.Id)
-	data.Name = types.StringValue(w.Name)
-	data.Slug = types.StringValue(w.Slug)
-
-	data.Inputs = types.StringValue(normalizeInputsJSON(w.Inputs))
-
-	agents := make([]WorkflowJobAgentModel, len(w.JobAgents))
-	for i, a := range w.JobAgents {
+	raw, ok := val.AsInterface().([]any)
+	if !ok {
+		return []WorkflowJobAgentModel{}
+	}
+	agents := make([]WorkflowJobAgentModel, len(raw))
+	for i, item := range raw {
+		obj, _ := item.(map[string]any)
+		var config map[string]interface{}
+		if c, ok := obj["config"].(map[string]any); ok {
+			config = c
+		}
 		agents[i] = WorkflowJobAgentModel{
-			Name:     types.StringValue(a.Name),
-			Ref:      types.StringValue(a.Ref),
-			Config:   interfaceMapStringValue(a.Config),
-			Selector: types.StringValue(a.Selector),
+			Name:     types.StringValue(stringFromAny(obj["name"])),
+			Ref:      types.StringValue(stringFromAny(obj["ref"])),
+			Config:   interfaceMapStringValue(config),
+			Selector: types.StringValue(stringFromAny(obj["selector"])),
 		}
 	}
-	data.JobAgents = agents
+	return agents
+}
+
+func stringFromAny(v any) string {
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return fmt.Sprint(v)
+}
+
+func setWorkflowModelFromProto(data *WorkflowResourceModel, w *apiv1.Workflow) {
+	data.ID = types.StringValue(w.GetId())
+	data.Name = types.StringValue(w.GetName())
+	data.Slug = types.StringValue(w.GetSlug())
+	data.Inputs = workflowInputsFromValue(w.GetInputs())
+	data.JobAgents = workflowJobAgentsFromValue(w.GetJobAgents())
 }

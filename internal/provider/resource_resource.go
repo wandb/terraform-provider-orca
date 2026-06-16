@@ -6,9 +6,9 @@ import (
 	"context"
 	"fmt"
 	"math/big"
-	"net/http"
-	"time"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var _ resource.Resource = &ResourceResource{}
@@ -114,66 +115,48 @@ func (r *ResourceResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	config, err := resourceConfigFromDynamic(data.Config)
+	configMap, err := resourceConfigFromDynamic(data.Config)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid config", err.Error())
+		return
+	}
+
+	config, err := structpb.NewStruct(configMap)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid config", err.Error())
 		return
 	}
 
 	metadata := resourceMetadataFromMap(data.Metadata)
-
-	now := time.Now().UTC()
-	resourceItem := api.ResourceProviderResource{
-		Name:       data.Name.ValueString(),
-		Identifier: data.Identifier.ValueString(),
-		Kind:       data.Kind.ValueString(),
-		Version:    data.Version.ValueString(),
-		Config:     config,
-		Metadata:   metadata,
-		CreatedAt:  now,
-	}
-
-	requestBody := api.SetResourceProviderResourcesJSONRequestBody{
-		Resources: []api.ResourceProviderResource{resourceItem},
-	}
-
-	patchResp, err := r.workspace.Client.SetResourceProviderResourcesWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.ProviderID.ValueString(),
-		requestBody,
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create resource", err.Error())
-		return
-	}
-
-	if patchResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create resource", formatResponseError(patchResp.StatusCode(), patchResp.Body))
-		return
-	}
-
 	identifier := data.Identifier.ValueString()
-	data.ID = types.StringValue(identifier)
 
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetResourceByIdentifierWithResponse(ctx, r.workspace.ID.String(), identifier)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	_, err = r.workspace.Resource.UpsertResourceByIdentifier(ctx, connect.NewRequest(&apiv1.UpsertResourceByIdentifierRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Identifier:  identifier,
+		Name:        data.Name.ValueString(),
+		Version:     data.Version.ValueString(),
+		Kind:        data.Kind.ValueString(),
+		Config:      config,
+		Metadata:    metadata,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create resource", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to create resource", err)
 		return
 	}
+
+	// UpsertResourceByIdentifier returns only an ack ({id, message}); the engine
+	// sets provider_id and may normalize config. Hydrate state from an
+	// authoritative read. The API is synchronous, so NotFound is a real error.
+	got, err := r.workspace.Resource.GetResourceByIdentifier(ctx, connect.NewRequest(&apiv1.GetResourceByIdentifierRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Identifier:  identifier,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read resource after create", err)
+		return
+	}
+
+	applyResource(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -191,48 +174,44 @@ func (r *ResourceResource) Read(ctx context.Context, req resource.ReadRequest, r
 		identifier = data.ID.ValueString()
 	}
 
-	resourceResp, err := r.workspace.Client.GetResourceByIdentifierWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		identifier,
-	)
+	got, err := r.workspace.Resource.GetResourceByIdentifier(ctx, connect.NewRequest(&apiv1.GetResourceByIdentifierRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Identifier:  identifier,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read resource",
-			fmt.Sprintf("Failed to read resource with identifier '%s': %s", identifier, err.Error()),
-		)
-		return
-	}
-
-	switch resourceResp.StatusCode() {
-	case http.StatusOK:
-		if resourceResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read resource", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to read resource", formatResponseError(resourceResp.StatusCode(), resourceResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to read resource", err)
 		return
 	}
 
-	res := resourceResp.JSON200
-	data.ID = types.StringValue(res.Identifier)
-	data.Name = types.StringValue(res.Name)
-	data.Identifier = types.StringValue(res.Identifier)
-	data.Kind = types.StringValue(res.Kind)
-	data.Version = types.StringValue(res.Version)
-
-	if res.ProviderId != nil {
-		data.ProviderID = types.StringValue(*res.ProviderId)
-	}
-
-	data.Config = goMapToDynamic(res.Config)
-	data.Metadata = stringMapValue(&res.Metadata)
+	applyResource(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// applyResource maps an authoritative *apiv1.Resource into the Terraform state model.
+func applyResource(data *ResourceResourceModel, res *apiv1.Resource) {
+	// id mirrors identifier (schema: "same as identifier").
+	data.ID = types.StringValue(res.GetIdentifier())
+	data.Name = types.StringValue(res.GetName())
+	data.Identifier = types.StringValue(res.GetIdentifier())
+	data.Kind = types.StringValue(res.GetKind())
+	data.Version = types.StringValue(res.GetVersion())
+
+	if providerID := res.GetProviderId(); providerID != "" {
+		data.ProviderID = types.StringValue(providerID)
+	}
+
+	var configMap map[string]interface{}
+	if cfg := res.GetConfig(); cfg != nil {
+		configMap = cfg.AsMap()
+	}
+	data.Config = goMapToDynamic(configMap)
+
+	data.Metadata = metadataMapValue(res.GetMetadata())
 }
 
 func (r *ResourceResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -248,7 +227,13 @@ func (r *ResourceResource) Update(ctx context.Context, req resource.UpdateReques
 	// Preserve the existing ID since it is computed and not known from the plan.
 	data.ID = state.ID
 
-	config, err := resourceConfigFromDynamic(data.Config)
+	configMap, err := resourceConfigFromDynamic(data.Config)
+	if err != nil {
+		resp.Diagnostics.AddError("Invalid config", err.Error())
+		return
+	}
+
+	config, err := structpb.NewStruct(configMap)
 	if err != nil {
 		resp.Diagnostics.AddError("Invalid config", err.Error())
 		return
@@ -256,37 +241,33 @@ func (r *ResourceResource) Update(ctx context.Context, req resource.UpdateReques
 
 	metadata := resourceMetadataFromMap(data.Metadata)
 
-	now := time.Now().UTC()
-	resourceItem := api.ResourceProviderResource{
-		Name:       data.Name.ValueString(),
-		Identifier: data.Identifier.ValueString(),
-		Kind:       data.Kind.ValueString(),
-		Version:    data.Version.ValueString(),
-		Config:     config,
-		Metadata:   metadata,
-		CreatedAt:  now,
-		UpdatedAt:  &now,
-	}
-
-	requestBody := api.SetResourceProviderResourcesJSONRequestBody{
-		Resources: []api.ResourceProviderResource{resourceItem},
-	}
-
-	patchResp, err := r.workspace.Client.SetResourceProviderResourcesWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.ProviderID.ValueString(),
-		requestBody,
-	)
+	_, err = r.workspace.Resource.UpsertResourceByIdentifier(ctx, connect.NewRequest(&apiv1.UpsertResourceByIdentifierRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Identifier:  data.Identifier.ValueString(),
+		Name:        data.Name.ValueString(),
+		Version:     data.Version.ValueString(),
+		Kind:        data.Kind.ValueString(),
+		Config:      config,
+		Metadata:    metadata,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to update resource", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to update resource", err)
 		return
 	}
 
-	if patchResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update resource", formatResponseError(patchResp.StatusCode(), patchResp.Body))
+	// UpsertResourceByIdentifier returns only an ack ({id, message}); the engine
+	// sets provider_id and may normalize config. Hydrate state from an
+	// authoritative read. The API is synchronous, so NotFound is a real error.
+	got, err := r.workspace.Resource.GetResourceByIdentifier(ctx, connect.NewRequest(&apiv1.GetResourceByIdentifierRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Identifier:  data.Identifier.ValueString(),
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read resource after update", err)
 		return
 	}
+
+	applyResource(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -298,23 +279,12 @@ func (r *ResourceResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	deleteResp, err := r.workspace.Client.RequestResourceDeletionByIdentifierWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.Identifier.ValueString(),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete resource", err.Error())
-		return
-	}
-
-	switch deleteResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusNotFound:
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to delete resource", formatResponseError(deleteResp.StatusCode(), deleteResp.Body))
+	_, err := r.workspace.Resource.DeleteResourceByIdentifier(ctx, connect.NewRequest(&apiv1.DeleteResourceByIdentifierRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Identifier:  data.Identifier.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete resource", err)
 		return
 	}
 }

@@ -4,7 +4,6 @@
 package provider
 
 import (
-	"context"
 	"os"
 	"testing"
 
@@ -44,13 +43,12 @@ func testAccPreCheck(t *testing.T) {
 		t.Skip("CTRLPLANE_URL must be set for acceptance tests")
 	}
 
-	client, err := api.NewAPIKeyClientWithResponses(os.Getenv("CTRLPLANE_URL"), os.Getenv("CTRLPLANE_API_KEY"))
+	client, err := api.NewWorkspaceClient(os.Getenv("CTRLPLANE_URL"), os.Getenv("CTRLPLANE_API_KEY"), os.Getenv("CTRLPLANE_WORKSPACE"))
 	if err != nil {
 		t.Skipf("Failed to create API client: %s", err.Error())
 	}
 
-	workspaceID := client.GetWorkspaceID(context.Background(), os.Getenv("CTRLPLANE_WORKSPACE"))
-	if workspaceID == uuid.Nil {
+	if client.ID == uuid.Nil {
 		t.Skip("CTRLPLANE_WORKSPACE not found for acceptance tests")
 	}
 }

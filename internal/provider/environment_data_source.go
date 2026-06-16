@@ -6,8 +6,9 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -87,40 +88,28 @@ func (d *EnvironmentDataSource) Read(ctx context.Context, req datasource.ReadReq
 		return
 	}
 
-	envResp, err := d.workspace.Client.GetEnvironmentByNameWithResponse(
-		ctx, d.workspace.ID.String(), data.Name.ValueString(),
-	)
+	envResp, err := d.workspace.System.GetEnvironmentByName(ctx, connect.NewRequest(&apiv1.GetEnvironmentByNameRequest{
+		WorkspaceId: d.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read environment",
-			fmt.Sprintf("Failed to read environment with name '%s': %s", data.Name.ValueString(), err.Error()),
-		)
+		if isNotFound(err) {
+			resp.Diagnostics.AddError(
+				"Environment not found",
+				fmt.Sprintf("No environment with name '%s' in workspace '%s'", data.Name.ValueString(), d.workspace.WorkspaceID()),
+			)
+			return
+		}
+		addConnectError(&resp.Diagnostics, "Failed to read environment", err)
 		return
 	}
 
-	if envResp.StatusCode() == http.StatusNotFound {
-		resp.Diagnostics.AddError(
-			"Environment not found",
-			fmt.Sprintf("No environment with name '%s' in workspace '%s'", data.Name.ValueString(), d.workspace.ID.String()),
-		)
-		return
-	}
-
-	if envResp.StatusCode() != http.StatusOK || envResp.JSON200 == nil {
-		resp.Diagnostics.AddError("Failed to read environment", formatResponseError(envResp.StatusCode(), envResp.Body))
-		return
-	}
-
-	env := envResp.JSON200
-	data.ID = types.StringValue(env.Id)
-	data.Name = types.StringValue(env.Name)
-	data.Description = descriptionValue(env.Description)
-	data.Metadata = stringMapValue(env.Metadata)
-	if env.ResourceSelector != nil && *env.ResourceSelector != "" {
-		data.ResourceSelector = types.StringValue(*env.ResourceSelector)
-	} else {
-		data.ResourceSelector = types.StringNull()
-	}
+	env := envResp.Msg
+	data.ID = types.StringValue(env.GetId())
+	data.Name = types.StringValue(env.GetName())
+	data.Description = optionalString(env.GetDescription())
+	data.ResourceSelector = optionalString(env.GetResourceSelector())
+	data.Metadata = metadataMapValue(env.GetMetadata())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
