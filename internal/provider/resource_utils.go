@@ -6,9 +6,14 @@ import (
 	"context"
 	"strings"
 
+	"github.com/google/cel-go/cel"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
+
+// celEnv is used only to parse selector strings into an AST so we can compare
+// them structurally. Parsing is purely syntactic and needs no declarations.
+var celEnv, _ = cel.NewEnv()
 
 func stringMapPointer(value types.Map) *map[string]string {
 	if value.IsNull() || value.IsUnknown() {
@@ -40,14 +45,47 @@ func normalizeCEL(value types.String) string {
 	return strings.Join(strings.Fields(value.ValueString()), " ")
 }
 
+// celCanonical parses a CEL selector and re-emits it in cel-go's canonical
+// form, collapsing the author's parenthesization to a single deterministic
+// shape. Returns ("", false) when the string does not parse.
+func celCanonical(expr string) (string, bool) {
+	ast, iss := celEnv.Parse(expr)
+	if iss != nil && iss.Err() != nil {
+		return "", false
+	}
+	out, err := cel.AstToString(ast)
+	if err != nil {
+		return "", false
+	}
+	return out, true
+}
+
+// celEquivalent reports whether two selector strings are the same expression.
+// It compares canonical ASTs so that diffs which differ only in
+// parenthesization or whitespace — the engine re-serializes selectors fully
+// parenthesized — are treated as equal. It does NOT recognize boolean-algebra
+// rewrites (e.g. factoring `(p && a) || (p && b)` into `p && (a || b)`); those
+// produce different ASTs and remain a visible diff. When either side fails to
+// parse, it falls back to whitespace-collapsed string comparison.
+func celEquivalent(a, b string) bool {
+	ca, okA := celCanonical(a)
+	cb, okB := celCanonical(b)
+	if okA && okB {
+		return ca == cb
+	}
+	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
+}
+
 // celNormalizedPlanModifier keeps the prior state value when the planned
-// config and state differ only by CEL-equivalent whitespace. The API collapses
-// whitespace on the server side, so without this, a multi-line heredoc config
-// would drift from the single-line form returned by Read on every plan.
+// config and state are the same CEL expression. The engine re-serializes
+// selectors in a canonical, fully-parenthesized form, so the value returned by
+// Read differs textually (parentheses, whitespace) from a hand-written config
+// even when the expression is identical. Without this, every plan would show a
+// spurious in-place update.
 type celNormalizedPlanModifier struct{}
 
 func (celNormalizedPlanModifier) Description(_ context.Context) string {
-	return "Suppresses diffs when the planned and prior-state CEL differ only by whitespace."
+	return "Suppresses diffs when the planned and prior-state CEL are the same expression."
 }
 
 func (m celNormalizedPlanModifier) MarkdownDescription(ctx context.Context) string {
@@ -58,7 +96,7 @@ func (celNormalizedPlanModifier) PlanModifyString(_ context.Context, req planmod
 	if req.StateValue.IsNull() || req.PlanValue.IsUnknown() {
 		return
 	}
-	if normalizeCEL(req.PlanValue) == normalizeCEL(req.StateValue) {
+	if celEquivalent(req.PlanValue.ValueString(), req.StateValue.ValueString()) {
 		resp.PlanValue = req.StateValue
 	}
 }
