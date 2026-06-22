@@ -28,7 +28,7 @@ func main() {
 	flag.Parse()
 
 	opts := providerserver.ServeOpts{
-		Address: "registry.terraform.io/ctrlplanedev/ctrlplane",
+		Address: "registry.terraform.io/wandb/orca",
 		Debug:   debug,
 	}
 
