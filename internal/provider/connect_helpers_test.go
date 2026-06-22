@@ -22,6 +22,21 @@ func TestOptionalString(t *testing.T) {
 	}
 }
 
+func TestOptionalSelector(t *testing.T) {
+	t.Parallel()
+	// The API stores an absent job_agent_selector as the literal "false";
+	// both "" and "false" must map to null so a null config round-trips.
+	if got := optionalSelector(""); !got.IsNull() {
+		t.Errorf("optionalSelector(\"\") = %v, want null", got)
+	}
+	if got := optionalSelector("false"); !got.IsNull() {
+		t.Errorf("optionalSelector(\"false\") = %v, want null", got)
+	}
+	if got := optionalSelector("resource.kind == 'k8s'"); got.IsNull() || got.ValueString() != "resource.kind == 'k8s'" {
+		t.Errorf("optionalSelector(real) = %v, want passthrough", got)
+	}
+}
+
 func TestRFC3339(t *testing.T) {
 	t.Parallel()
 	if got := rfc3339(nil); got != "" {

@@ -164,11 +164,7 @@ func applyEnvironment(data *EnvironmentResourceModel, env *apiv1.Environment) {
 	data.Name = types.StringValue(env.GetName())
 	data.Description = optionalString(env.GetDescription())
 	data.Metadata = metadataMapValue(env.GetMetadata())
-	if selector := env.GetResourceSelector(); selector != "" {
-		data.ResourceSelector = types.StringValue(selector)
-	} else {
-		data.ResourceSelector = types.StringNull()
-	}
+	data.ResourceSelector = optionalString(env.GetResourceSelector())
 }
 
 // Schema implements resource.Resource.

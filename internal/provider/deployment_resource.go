@@ -249,7 +249,7 @@ func (r *DeploymentResource) applyDeployment(data *DeploymentResourceModel, dep 
 	data.Name = types.StringValue(dep.GetName())
 	data.Metadata = metadataMapValue(dep.GetMetadata())
 	data.ResourceSelector = optionalString(dep.GetResourceSelector())
-	data.JobAgentSelector = optionalString(dep.GetJobAgentSelector())
+	data.JobAgentSelector = optionalSelector(dep.GetJobAgentSelector())
 
 	var jobAgentConfig map[string]interface{}
 	if cfg := dep.GetJobAgentConfig(); cfg != nil {

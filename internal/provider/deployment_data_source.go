@@ -129,7 +129,7 @@ func (d *DeploymentDataSource) Read(ctx context.Context, req datasource.ReadRequ
 	data.Description = optionalString(dep.GetDescription())
 	data.Metadata = metadataMapValue(dep.GetMetadata())
 	data.ResourceSelector = optionalString(dep.GetResourceSelector())
-	data.JobAgentSelector = optionalString(dep.GetJobAgentSelector())
+	data.JobAgentSelector = optionalSelector(dep.GetJobAgentSelector())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

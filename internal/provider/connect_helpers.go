@@ -52,6 +52,19 @@ func optionalString(s string) types.String {
 	return types.StringValue(s)
 }
 
+// optionalSelector maps a proto selector string to a Terraform value, treating
+// both "" and the literal "false" as null. The API stores an absent
+// job_agent_selector as the constant-false sentinel "false" (body.jobAgentSelector
+// ?? "false"), so a deployment created with no selector reads back "false". Mapping
+// that to null keeps the post-apply read consistent with a null config — otherwise
+// Terraform reports "inconsistent result after apply" (was null, now "false").
+func optionalSelector(s string) types.String {
+	if s == "" || s == "false" {
+		return types.StringNull()
+	}
+	return types.StringValue(s)
+}
+
 // isNotFound reports whether err is a Connect NotFound error, which on a Read
 // means the remote object no longer exists and the resource should be removed
 // from state rather than producing an error.
