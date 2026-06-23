@@ -5,8 +5,9 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -17,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 var _ resource.Resource = &DeploymentVariableValueResource{}
@@ -162,7 +164,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		data.ID = types.StringValue(valueID)
 	}
 
-	apiValue, err := valueFromVariableValueModel(data)
+	protoValue, err := structpbValueFromModel(data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create deployment variable value", fmt.Sprintf("Failed to build value: %s", err.Error()))
 		return
@@ -173,52 +175,38 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		selector = &cel
 	}
 
-	requestBody := api.RequestDeploymentVariableValueUpsertJSONRequestBody{
+	created, err := r.workspace.Deployment.UpsertDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableValueRequest{
+		WorkspaceId:          r.workspace.WorkspaceID(),
+		ValueId:              valueID,
 		DeploymentVariableId: data.VariableId.ValueString(),
 		Priority:             data.Priority.ValueInt64(),
 		ResourceSelector:     selector,
-		Value:                *apiValue,
-	}
-
-	valueResp, err := r.workspace.Client.RequestDeploymentVariableValueUpsertWithResponse(
-		ctx, r.workspace.ID.String(), valueID, requestBody,
-	)
+		Value:                protoValue,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create deployment variable value", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to create deployment variable value", err)
 		return
 	}
 
-	if valueResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create deployment variable value", formatResponseError(valueResp.StatusCode(), valueResp.Body))
-		return
-	}
-
-	if valueResp.JSON202 == nil || valueResp.JSON202.Id == "" {
+	valID := created.Msg.GetId()
+	if valID == "" {
 		resp.Diagnostics.AddError("Failed to create deployment variable value", "Empty value ID in response")
 		return
 	}
 
-	valId := valueResp.JSON202.Id
-	data.ID = types.StringValue(valId)
+	data.ID = types.StringValue(valID)
 
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetDeploymentVariableValueWithResponse(
-			ctx, r.workspace.ID.String(), valId,
-		)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	got, err := r.workspace.Deployment.GetDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableValueRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		ValueId:     valID,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create deployment variable value", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to read deployment variable value after create", err)
+		return
+	}
+
+	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg)...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -232,58 +220,47 @@ func (r *DeploymentVariableValueResource) Read(ctx context.Context, req resource
 		return
 	}
 
-	valueResp, err := r.workspace.Client.GetDeploymentVariableValueWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
+	got, err := r.workspace.Deployment.GetDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableValueRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		ValueId:     data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read deployment variable value",
-			fmt.Sprintf("Failed to read deployment variable value with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
-		return
-	}
-
-	switch valueResp.StatusCode() {
-	case http.StatusOK:
-		if valueResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read deployment variable value", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	case http.StatusBadRequest:
-		if valueResp.JSON400 != nil && valueResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to read deployment variable value", fmt.Sprintf("Bad request: %s", *valueResp.JSON400.Error))
-			return
-		}
-		resp.Diagnostics.AddError("Failed to read deployment variable value", "Bad request")
+		addConnectError(&resp.Diagnostics, "Failed to read deployment variable value", err)
 		return
 	}
 
-	if valueResp.StatusCode() != http.StatusOK {
-		resp.Diagnostics.AddError("Failed to read deployment variable value", formatResponseError(valueResp.StatusCode(), valueResp.Body))
+	value := got.Msg
+	if value.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read deployment variable value", "Empty response from server")
 		return
 	}
 
-	value := valueResp.JSON200
-	data.ID = types.StringValue(value.Id)
-	data.VariableId = types.StringValue(value.DeploymentVariableId)
-	data.Priority = types.Int64Value(value.Priority)
-
-	if value.ResourceSelector != nil && *value.ResourceSelector != "" {
-		data.ResourceSelector = types.StringValue(*value.ResourceSelector)
-	} else {
-		data.ResourceSelector = types.StringNull()
-	}
-
-	diags := setValueOnModel(ctx, &data, value.Value)
-	resp.Diagnostics.Append(diags...)
+	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, value)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// applyDeploymentVariableValue maps a proto DeploymentVariableValue onto the
+// model (id, variable id, priority, resource_selector, and the value union).
+func applyDeploymentVariableValue(ctx context.Context, data *DeploymentVariableValueResourceModel, value *apiv1.DeploymentVariableValue) diag.Diagnostics {
+	data.ID = types.StringValue(value.GetId())
+	data.VariableId = types.StringValue(value.GetDeploymentVariableId())
+	data.Priority = types.Int64Value(value.GetPriority())
+
+	if selector := value.GetResourceSelector(); selector != "" {
+		data.ResourceSelector = types.StringValue(selector)
+	} else {
+		data.ResourceSelector = types.StringNull()
+	}
+
+	return setValueOnModel(ctx, data, value.GetValue())
 }
 
 func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -293,7 +270,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	apiValue, err := valueFromVariableValueModel(data)
+	protoValue, err := structpbValueFromModel(data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update deployment variable value", fmt.Sprintf("Failed to build value: %s", err.Error()))
 		return
@@ -304,35 +281,41 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		selector = &cel
 	}
 
-	requestBody := api.UpsertDeploymentVariableValueRequest{
+	upserted, err := r.workspace.Deployment.UpsertDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableValueRequest{
+		WorkspaceId:          r.workspace.WorkspaceID(),
+		ValueId:              data.ID.ValueString(),
 		DeploymentVariableId: data.VariableId.ValueString(),
 		Priority:             data.Priority.ValueInt64(),
 		ResourceSelector:     selector,
-		Value:                *apiValue,
-	}
-
-	valueResp, err := r.workspace.Client.RequestDeploymentVariableValueUpsertWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(), requestBody,
-	)
+		Value:                protoValue,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to update deployment variable value",
-			fmt.Sprintf("Failed to update deployment variable value with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
+		addConnectError(&resp.Diagnostics, "Failed to update deployment variable value", err)
 		return
 	}
 
-	if valueResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update deployment variable value", formatResponseError(valueResp.StatusCode(), valueResp.Body))
-		return
-	}
-
-	if valueResp.JSON202 == nil || valueResp.JSON202.Id == "" {
+	valID := upserted.Msg.GetId()
+	if valID == "" {
 		resp.Diagnostics.AddError("Failed to update deployment variable value", "Empty value ID in response")
 		return
 	}
 
-	data.ID = types.StringValue(valueResp.JSON202.Id)
+	data.ID = types.StringValue(valID)
+
+	got, err := r.workspace.Deployment.GetDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableValueRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		ValueId:     valID,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read deployment variable value after update", err)
+		return
+	}
+
+	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -343,36 +326,22 @@ func (r *DeploymentVariableValueResource) Delete(ctx context.Context, req resour
 		return
 	}
 
-	valueResp, err := r.workspace.Client.RequestDeploymentVariableValueDeletionWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete deployment variable value", fmt.Sprintf("Failed to delete deployment variable value: %s", err.Error()))
+	_, err := r.workspace.Deployment.DeleteDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.DeleteDeploymentVariableValueRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		ValueId:     data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete deployment variable value", err)
 		return
 	}
-
-	switch valueResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusBadRequest:
-		if valueResp.JSON400 != nil && valueResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete deployment variable value", fmt.Sprintf("Bad request: %s", *valueResp.JSON400.Error))
-			return
-		}
-	case http.StatusNotFound:
-		if valueResp.JSON404 != nil && valueResp.JSON404.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete deployment variable value", fmt.Sprintf("Not found: %s", *valueResp.JSON404.Error))
-			return
-		}
-	}
-
-	resp.Diagnostics.AddError("Failed to delete deployment variable value", formatResponseError(valueResp.StatusCode(), valueResp.Body))
 }
 
-// valueFromVariableValueModel converts the Terraform model into the API Value union type.
-func valueFromVariableValueModel(data DeploymentVariableValueResourceModel) (*api.Value, error) {
-	var value api.Value
-
+// structpbValueFromModel converts the Terraform model into the single
+// *structpb.Value carried by the proto API. A reference value is encoded as a
+// map { "reference": <string>, "path": [<strings>] }; a literal value is
+// encoded directly from its decoded Go representation. This replaces the old
+// api.Value union, which is being removed.
+func structpbValueFromModel(data DeploymentVariableValueResourceModel) (*structpb.Value, error) {
 	if !data.ReferenceValue.IsNull() && !data.ReferenceValue.IsUnknown() {
 		refAttrs := data.ReferenceValue.Attributes()
 
@@ -400,75 +369,105 @@ func valueFromVariableValueModel(data DeploymentVariableValueResourceModel) (*ap
 			return nil, fmt.Errorf("failed to convert reference_value.path to []string")
 		}
 
-		if err := value.FromReferenceValue(api.ReferenceValue{
-			Reference: reference.ValueString(),
-			Path:      pathStrings,
-		}); err != nil {
-			return nil, fmt.Errorf("failed to set reference value: %w", err)
+		pathAny := make([]any, len(pathStrings))
+		for i, p := range pathStrings {
+			pathAny[i] = p
 		}
 
-		return &value, nil
+		refValue, err := structpb.NewValue(map[string]any{
+			"reference": reference.ValueString(),
+			"path":      pathAny,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build reference value: %w", err)
+		}
+		return refValue, nil
 	}
 
 	if !data.LiteralValue.IsNull() && !data.LiteralValue.IsUnknown() {
-		literal, err := literalValueFromDynamic(data.LiteralValue)
+		tfValue, err := data.LiteralValue.ToTerraformValue(context.Background())
+		if err != nil {
+			return nil, fmt.Errorf("failed to read literal value: %w", err)
+		}
+
+		decoded, err := terraformValueToInterface(tfValue)
 		if err != nil {
 			return nil, fmt.Errorf("failed to convert literal value: %w", err)
 		}
-		if literal == nil {
-			return nil, fmt.Errorf("literal_value resolved to nil")
-		}
 
-		if err := value.FromLiteralValue(*literal); err != nil {
-			return nil, fmt.Errorf("failed to set literal value: %w", err)
+		litValue, err := structpb.NewValue(decoded)
+		if err != nil {
+			return nil, fmt.Errorf("failed to build literal value: %w", err)
 		}
-
-		return &value, nil
+		return litValue, nil
 	}
 
 	return nil, fmt.Errorf("one of literal_value or reference_value must be provided")
 }
 
-// setValueOnModel reads from the API Value union and sets the appropriate field on the model.
-func setValueOnModel(_ context.Context, data *DeploymentVariableValueResourceModel, value api.Value) diag.Diagnostics {
+// setValueOnModel reads from the proto *structpb.Value and sets the appropriate
+// field on the model. A map carrying both "reference" and "path" keys is treated
+// as a reference value; anything else is treated as a literal value.
+func setValueOnModel(_ context.Context, data *DeploymentVariableValueResourceModel, value *structpb.Value) diag.Diagnostics {
 	var diags diag.Diagnostics
 
-	// Try reference value first
-	if refVal, err := value.AsReferenceValue(); err == nil && refVal.Reference != "" {
-		pathElements := make([]attr.Value, len(refVal.Path))
-		for i, p := range refVal.Path {
-			pathElements[i] = types.StringValue(p)
-		}
-
-		pathList, listDiags := types.ListValue(types.StringType, pathElements)
-		if listDiags.HasError() {
-			diags.Append(listDiags...)
-			return diags
-		}
-
-		refObj, objDiags := types.ObjectValue(referenceValueAttrTypes, map[string]attr.Value{
-			"reference": types.StringValue(refVal.Reference),
-			"path":      pathList,
-		})
-		if objDiags.HasError() {
-			diags.Append(objDiags...)
-			return diags
-		}
-
-		data.ReferenceValue = refObj
+	if value == nil {
 		data.LiteralValue = types.DynamicNull()
-		return diags
-	}
-
-	// Try literal value
-	if litVal, err := value.AsLiteralValue(); err == nil {
-		data.LiteralValue = literalValueToDynamic(&litVal)
 		data.ReferenceValue = types.ObjectNull(referenceValueAttrTypes)
 		return diags
 	}
 
-	// Unknown value type - set both to null
-	data.LiteralValue = types.DynamicNull()
+	decoded := value.AsInterface()
+
+	// Try reference value first: a map with both "reference" and "path" keys.
+	if m, ok := decoded.(map[string]any); ok {
+		ref, hasRef := m["reference"]
+		rawPath, hasPath := m["path"]
+		refStr, refIsString := ref.(string)
+		if hasRef && hasPath && refIsString && refStr != "" {
+			pathSlice, _ := rawPath.([]any)
+			pathElements := make([]attr.Value, len(pathSlice))
+			for i, p := range pathSlice {
+				ps, _ := p.(string)
+				pathElements[i] = types.StringValue(ps)
+			}
+
+			pathList, listDiags := types.ListValue(types.StringType, pathElements)
+			if listDiags.HasError() {
+				diags.Append(listDiags...)
+				return diags
+			}
+
+			refObj, objDiags := types.ObjectValue(referenceValueAttrTypes, map[string]attr.Value{
+				"reference": types.StringValue(refStr),
+				"path":      pathList,
+			})
+			if objDiags.HasError() {
+				diags.Append(objDiags...)
+				return diags
+			}
+
+			data.ReferenceValue = refObj
+			data.LiteralValue = types.DynamicNull()
+			return diags
+		}
+	}
+
+	// Otherwise treat as a literal value.
+	if decoded == nil {
+		data.LiteralValue = types.DynamicNull()
+		data.ReferenceValue = types.ObjectNull(referenceValueAttrTypes)
+		return diags
+	}
+
+	attrValue, _, err := attrValueFromInterface(decoded)
+	if err != nil {
+		data.LiteralValue = types.DynamicNull()
+		data.ReferenceValue = types.ObjectNull(referenceValueAttrTypes)
+		return diags
+	}
+
+	data.LiteralValue = types.DynamicValue(attrValue)
 	data.ReferenceValue = types.ObjectNull(referenceValueAttrTypes)
 	return diags
 }

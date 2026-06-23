@@ -4,9 +4,9 @@ package provider
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -58,37 +58,29 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	workspaceId := r.workspace.ID
 	var selector *string
 	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
 		selector = &cel
 	}
 
-	requestBody := api.RequestEnvironmentCreationJSONRequestBody{
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
+
+	created, err := r.workspace.System.CreateEnvironment(ctx, connect.NewRequest(&apiv1.CreateEnvironmentRequest{
+		WorkspaceId:      r.workspace.WorkspaceID(),
 		Name:             data.Name.ValueString(),
 		Description:      data.Description.ValueStringPointer(),
 		ResourceSelector: selector,
-		Metadata:         stringMapPointer(data.Metadata),
-	}
-	envResp, err := r.workspace.Client.RequestEnvironmentCreationWithResponse(
-		ctx, workspaceId.String(), requestBody,
-	)
+		Metadata:         metadata,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create environment", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to create environment", err)
 		return
 	}
 
-	if envResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create environment", formatResponseError(envResp.StatusCode(), envResp.Body))
-		return
-	}
-
-	if envResp.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to create environment", "Empty response from server")
-		return
-	}
-
-	envId := envResp.JSON202.Id
+	envId := created.Msg.GetId()
 	if envId == "" {
 		resp.Diagnostics.AddError("Failed to create environment", "Empty environment ID in response")
 		return
@@ -96,24 +88,16 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 
 	data.ID = types.StringValue(envId)
 
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetEnvironmentWithResponse(ctx, r.workspace.ID.String(), envId)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	got, err := r.workspace.System.GetEnvironment(ctx, connect.NewRequest(&apiv1.GetEnvironmentRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		EnvironmentId: envId,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create environment", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to read environment after create", err)
 		return
 	}
+
+	applyEnvironment(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -126,16 +110,12 @@ func (r *EnvironmentResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	clientResp, err := r.workspace.Client.RequestEnvironmentDeletionWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete environment", fmt.Sprintf("Failed to delete environment: %s", err.Error()))
-		return
-	}
-
-	if clientResp.StatusCode() != http.StatusAccepted && clientResp.StatusCode() != http.StatusNoContent {
-		resp.Diagnostics.AddError("Failed to delete environment", formatResponseError(clientResp.StatusCode(), clientResp.Body))
+	_, err := r.workspace.System.DeleteEnvironment(ctx, connect.NewRequest(&apiv1.DeleteEnvironmentRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		EnvironmentId: data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete environment", err)
 		return
 	}
 }
@@ -149,60 +129,42 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	envResp, err := r.workspace.Client.GetEnvironmentWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
+	got, err := r.workspace.System.GetEnvironment(ctx, connect.NewRequest(&apiv1.GetEnvironmentRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		EnvironmentId: data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read environment",
-			fmt.Sprintf("Failed to read environment with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
-		return
-	}
-
-	switch envResp.StatusCode() {
-	case http.StatusOK:
-		if envResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read environment", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	case http.StatusBadRequest:
-		if envResp.JSON400 != nil && envResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to read environment", fmt.Sprintf("Bad request: %s", *envResp.JSON400.Error))
-			return
-		}
-		resp.Diagnostics.AddError("Failed to read environment", "Bad request")
+		addConnectError(&resp.Diagnostics, "Failed to read environment", err)
 		return
 	}
 
-	if envResp.StatusCode() != http.StatusOK {
-		resp.Diagnostics.AddError("Failed to read environment", formatResponseError(envResp.StatusCode(), envResp.Body))
-		return
-	}
-
-	if envResp.JSON200.Id == "" {
+	env := got.Msg
+	if env.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read environment", "Empty environment ID in response")
 		return
 	}
-	if envResp.JSON200.Name == "" {
+	if env.GetName() == "" {
 		resp.Diagnostics.AddError("Failed to read environment", "Empty environment name in response")
 		return
 	}
 
-	data.ID = types.StringValue(envResp.JSON200.Id)
-	data.Name = types.StringValue(envResp.JSON200.Name)
-	data.Description = descriptionValue(envResp.JSON200.Description)
-	data.Metadata = stringMapValue(envResp.JSON200.Metadata)
-	if envResp.JSON200.ResourceSelector != nil && *envResp.JSON200.ResourceSelector != "" {
-		data.ResourceSelector = types.StringValue(*envResp.JSON200.ResourceSelector)
-	} else {
-		data.ResourceSelector = types.StringNull()
-	}
+	applyEnvironment(&data, env)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// applyEnvironment hydrates the Terraform model from an authoritative
+// *apiv1.Environment returned by the API.
+func applyEnvironment(data *EnvironmentResourceModel, env *apiv1.Environment) {
+	data.ID = types.StringValue(env.GetId())
+	data.Name = types.StringValue(env.GetName())
+	data.Description = optionalString(env.GetDescription())
+	data.Metadata = metadataMapValue(env.GetMetadata())
+	data.ResourceSelector = optionalString(env.GetResourceSelector())
 }
 
 // Schema implements resource.Resource.
@@ -258,41 +220,40 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		selector = &cel
 	}
 
-	requestBody := api.RequestEnvironmentUpsertJSONRequestBody{
-		ResourceSelector: selector,
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
+
+	upserted, err := r.workspace.System.UpsertEnvironment(ctx, connect.NewRequest(&apiv1.UpsertEnvironmentRequest{
+		WorkspaceId:      r.workspace.WorkspaceID(),
+		EnvironmentId:    data.ID.ValueString(),
 		Name:             data.Name.ValueString(),
 		Description:      data.Description.ValueStringPointer(),
-		Metadata:         stringMapPointer(data.Metadata),
-	}
-	envResp, err := r.workspace.Client.RequestEnvironmentUpsertWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(), requestBody,
-	)
-
+		ResourceSelector: selector,
+		Metadata:         metadata,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to update environment",
-			fmt.Sprintf("Failed to update environment with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
+		addConnectError(&resp.Diagnostics, "Failed to update environment", err)
 		return
 	}
 
-	if envResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update environment", formatResponseError(envResp.StatusCode(), envResp.Body))
-		return
-	}
-
-	if envResp.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to update environment", "Empty response from server")
-		return
-	}
-
-	envId := envResp.JSON202.Id
+	envId := upserted.Msg.GetId()
 	if envId == "" {
-		resp.Diagnostics.AddError("Failed to update environment", "Empty environment ID in response")
+		envId = data.ID.ValueString()
+	}
+	data.ID = types.StringValue(envId)
+
+	got, err := r.workspace.System.GetEnvironment(ctx, connect.NewRequest(&apiv1.GetEnvironmentRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		EnvironmentId: envId,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read environment after update", err)
 		return
 	}
 
-	data.ID = types.StringValue(envId)
+	applyEnvironment(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }

@@ -4,9 +4,10 @@ package provider
 
 import (
 	"context"
-	"net/http"
 	"strings"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -103,20 +104,16 @@ func (r *DeploymentSystemLinkResource) Create(ctx context.Context, req resource.
 		return
 	}
 
-	workspaceID := r.workspace.ID.String()
 	systemID := data.SystemID.ValueString()
 	deploymentID := data.DeploymentID.ValueString()
 
-	linkResp, err := r.workspace.Client.LinkDeploymentToSystemWithResponse(
-		ctx, workspaceID, systemID, deploymentID,
-	)
+	_, err := r.workspace.System.LinkDeploymentToSystem(ctx, connect.NewRequest(&apiv1.DeploymentSystemLinkRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		SystemId:     systemID,
+		DeploymentId: deploymentID,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to link deployment to system", err.Error())
-		return
-	}
-
-	if linkResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to link deployment to system", formatResponseError(linkResp.StatusCode(), linkResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to link deployment to system", err)
 		return
 	}
 
@@ -135,23 +132,26 @@ func (r *DeploymentSystemLinkResource) Read(ctx context.Context, req resource.Re
 	systemID := data.SystemID.ValueString()
 	deploymentID := data.DeploymentID.ValueString()
 
-	linkResp, err := r.workspace.Client.GetDeploymentSystemLinkWithResponse(
-		ctx, r.workspace.ID.String(), systemID, deploymentID,
-	)
+	got, err := r.workspace.System.GetDeploymentSystemLink(ctx, connect.NewRequest(&apiv1.DeploymentSystemLinkRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		SystemId:     systemID,
+		DeploymentId: deploymentID,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read deployment system link", err.Error())
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		addConnectError(&resp.Diagnostics, "Failed to read deployment system link", err)
 		return
 	}
 
-	switch linkResp.StatusCode() {
-	case http.StatusOK:
-		data.ID = types.StringValue(systemID + "/" + deploymentID)
-		resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-	default:
-		resp.Diagnostics.AddError("Failed to read deployment system link", formatResponseError(linkResp.StatusCode(), linkResp.Body))
-	}
+	link := got.Msg
+	data.SystemID = types.StringValue(link.GetSystemId())
+	data.DeploymentID = types.StringValue(link.GetDeploymentId())
+	data.ID = types.StringValue(link.GetSystemId() + "/" + link.GetDeploymentId())
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
 func (r *DeploymentSystemLinkResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -168,24 +168,13 @@ func (r *DeploymentSystemLinkResource) Delete(ctx context.Context, req resource.
 		return
 	}
 
-	workspaceID := r.workspace.ID.String()
-	systemID := data.SystemID.ValueString()
-	deploymentID := data.DeploymentID.ValueString()
-
-	unlinkResp, err := r.workspace.Client.UnlinkDeploymentFromSystemWithResponse(
-		ctx, workspaceID, systemID, deploymentID,
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to unlink deployment from system", err.Error())
+	_, err := r.workspace.System.UnlinkDeploymentFromSystem(ctx, connect.NewRequest(&apiv1.DeploymentSystemLinkRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		SystemId:     data.SystemID.ValueString(),
+		DeploymentId: data.DeploymentID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to unlink deployment from system", err)
 		return
-	}
-
-	switch unlinkResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusNotFound:
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to unlink deployment from system", formatResponseError(unlinkResp.StatusCode(), unlinkResp.Body))
 	}
 }

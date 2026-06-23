@@ -7,11 +7,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
-	"time"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
-	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -20,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var _ resource.Resource = &ResourceProviderResource{}
@@ -134,44 +134,29 @@ func (r *ResourceProviderResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	providerID := uuid.NewString()
-
-	upsertResp, err := r.workspace.Client.RequestResourceProviderUpsertWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		api.RequestResourceProviderUpsertJSONRequestBody{
-			Id:       providerID,
-			Name:     data.Name.ValueString(),
-			Metadata: stringMapPointer(data.Metadata),
-		},
-	)
+	upserted, err := r.workspace.Resource.UpsertResourceProvider(ctx, connect.NewRequest(&apiv1.UpsertResourceProviderRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create resource provider", err.Error())
-		return
-	}
-	if upsertResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create resource provider", formatResponseError(upsertResp.StatusCode(), upsertResp.Body))
-		return
-	}
-	if upsertResp.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to create resource provider", "Empty response from server")
+		addConnectError(&resp.Diagnostics, "Failed to create resource provider", err)
 		return
 	}
 
-	data.ID = types.StringValue(upsertResp.JSON202.Id)
+	providerID := upserted.Msg.GetId()
+	if providerID == "" {
+		resp.Diagnostics.AddError("Failed to create resource provider", "Empty resource provider ID in response")
+		return
+	}
+
+	data.ID = types.StringValue(providerID)
 
 	if len(data.Resources) > 0 {
-		if err := r.setResources(ctx, data.ID.ValueString(), data.Resources); err != nil {
+		if err := r.setResources(ctx, providerID, data.Resources); err != nil {
 			resp.Diagnostics.AddError("Failed to set resources", err.Error())
 			return
 		}
 
-		firstIdentifier := data.Resources[0].Identifier.ValueString()
-		if err := r.waitForResourceAvailable(ctx, firstIdentifier); err != nil {
-			resp.Diagnostics.AddError("Failed to create resources",
-				fmt.Sprintf("Resources not available after creation: %s", err.Error()))
-			return
-		}
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
@@ -184,60 +169,47 @@ func (r *ResourceProviderResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	providerResp, err := r.workspace.Client.GetResourceProviderByNameWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.Name.ValueString(),
-	)
+	providerResp, err := r.workspace.Resource.GetResourceProviderByName(ctx, connect.NewRequest(&apiv1.GetResourceProviderByNameRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read resource provider", err.Error())
-		return
-	}
-
-	switch providerResp.StatusCode() {
-	case http.StatusOK:
-		if providerResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read resource provider", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to read resource provider",
-			formatResponseError(providerResp.StatusCode(), providerResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to read resource provider", err)
 		return
 	}
 
-	provider := providerResp.JSON200
-	data.ID = types.StringValue(provider.Id)
-	data.Name = types.StringValue(provider.Name)
-	data.Metadata = stringMapValue(provider.Metadata)
+	provider := providerResp.Msg
+	if provider.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read resource provider", "Empty resource provider ID in response")
+		return
+	}
 
-	resourcesResp, err := r.workspace.Client.GetResourceProviderResourcesWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.Name.ValueString(),
-	)
+	data.ID = types.StringValue(provider.GetId())
+	data.Name = types.StringValue(provider.GetName())
+	data.Metadata = metadataMapValue(provider.GetMetadata())
+
+	resourcesResp, err := r.workspace.Resource.GetResourceProviderResources(ctx, connect.NewRequest(&apiv1.GetResourceProviderResourcesRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to list provider resources", err.Error())
-		return
-	}
-	if resourcesResp.StatusCode() != http.StatusOK || resourcesResp.JSON200 == nil {
-		resp.Diagnostics.AddError("Failed to list provider resources",
-			formatResponseError(resourcesResp.StatusCode(), resourcesResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to list provider resources", err)
 		return
 	}
 
 	var updatedResources []ResourceProviderResourceItemModel
-	for _, apiRes := range resourcesResp.JSON200.Items {
+	for _, apiRes := range resourcesResp.Msg.GetItems() {
 		updatedResources = append(updatedResources, ResourceProviderResourceItemModel{
-			Name:       types.StringValue(apiRes.Name),
-			Identifier: types.StringValue(apiRes.Identifier),
-			Kind:       types.StringValue(apiRes.Kind),
-			Version:    types.StringValue(apiRes.Version),
-			Config:     configToJSONString(apiRes.Config),
-			Metadata:   stringMapValue(&apiRes.Metadata),
+			Name:       types.StringValue(apiRes.GetName()),
+			Identifier: types.StringValue(apiRes.GetIdentifier()),
+			Kind:       types.StringValue(apiRes.GetKind()),
+			Version:    types.StringValue(apiRes.GetVersion()),
+			Config:     configStructToJSONString(apiRes.GetConfig()),
+			Metadata:   metadataMapValue(apiRes.GetMetadata()),
 		})
 	}
 	data.Resources = updatedResources
@@ -257,23 +229,17 @@ func (r *ResourceProviderResource) Update(ctx context.Context, req resource.Upda
 
 	data.ID = state.ID
 
-	upsertResp, err := r.workspace.Client.RequestResourceProviderUpsertWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		api.RequestResourceProviderUpsertJSONRequestBody{
-			Id:       data.ID.ValueString(),
-			Name:     data.Name.ValueString(),
-			Metadata: stringMapPointer(data.Metadata),
-		},
-	)
+	upserted, err := r.workspace.Resource.UpsertResourceProvider(ctx, connect.NewRequest(&apiv1.UpsertResourceProviderRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to update resource provider", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to update resource provider", err)
 		return
 	}
-	if upsertResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update resource provider",
-			formatResponseError(upsertResp.StatusCode(), upsertResp.Body))
-		return
+
+	if id := upserted.Msg.GetId(); id != "" {
+		data.ID = types.StringValue(id)
 	}
 
 	// Set all current resources on the provider first so the backend is
@@ -320,68 +286,45 @@ func (r *ResourceProviderResource) Delete(ctx context.Context, req resource.Dele
 			return
 		}
 	}
+
+	_, err := r.workspace.Resource.DeleteResourceProviderByName(ctx, connect.NewRequest(&apiv1.DeleteResourceProviderByNameRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete resource provider", err)
+		return
+	}
 }
 
 // setResources calls SetResourceProviderResources with the full list.
 func (r *ResourceProviderResource) setResources(ctx context.Context, providerID string, items []ResourceProviderResourceItemModel) error {
-	apiResources, err := resourceItemsFromModel(items)
+	apiResources, err := resourceInputsFromModel(items)
 	if err != nil {
 		return err
 	}
 
-	setResp, err := r.workspace.Client.SetResourceProviderResourcesWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		providerID,
-		api.SetResourceProviderResourcesJSONRequestBody{
-			Resources: apiResources,
-		},
-	)
+	_, err = r.workspace.Resource.SetResourceProviderResources(ctx, connect.NewRequest(&apiv1.SetResourceProviderResourcesRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		ProviderId:  providerID,
+		Resources:   apiResources,
+	}))
 	if err != nil {
 		return err
-	}
-	if setResp.StatusCode() != http.StatusAccepted {
-		return fmt.Errorf("%s", formatResponseError(setResp.StatusCode(), setResp.Body))
 	}
 	return nil
 }
 
-// deleteResource deletes a single resource by identifier, ignoring 404s.
+// deleteResource deletes a single resource by identifier, ignoring NotFound.
 func (r *ResourceProviderResource) deleteResource(ctx context.Context, identifier string) error {
-	deleteResp, err := r.workspace.Client.RequestResourceDeletionByIdentifierWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		identifier,
-	)
-	if err != nil {
+	_, err := r.workspace.Resource.DeleteResourceByIdentifier(ctx, connect.NewRequest(&apiv1.DeleteResourceByIdentifierRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Identifier:  identifier,
+	}))
+	if err != nil && !isNotFound(err) {
 		return err
 	}
-	switch deleteResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent, http.StatusNotFound:
-		return nil
-	default:
-		return fmt.Errorf("%s", formatResponseError(deleteResp.StatusCode(), deleteResp.Body))
-	}
-}
-
-// waitForResourceAvailable polls until a resource is readable by identifier.
-func (r *ResourceProviderResource) waitForResourceAvailable(ctx context.Context, identifier string) error {
-	return waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetResourceByIdentifierWithResponse(
-			ctx, r.workspace.ID.String(), identifier,
-		)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	return nil
 }
 
 // ResourceProviderModel describes the resource provider data model.
@@ -402,40 +345,46 @@ type ResourceProviderResourceItemModel struct {
 	Metadata   types.Map    `tfsdk:"metadata"`
 }
 
-// resourceItemsFromModel converts Terraform model resource items to API request format.
-func resourceItemsFromModel(items []ResourceProviderResourceItemModel) ([]api.ResourceProviderResource, error) {
-	now := time.Now().UTC()
-	result := make([]api.ResourceProviderResource, 0, len(items))
+// resourceInputsFromModel converts Terraform model resource items to proto ResourceInput format.
+func resourceInputsFromModel(items []ResourceProviderResourceItemModel) ([]*apiv1.ResourceInput, error) {
+	result := make([]*apiv1.ResourceInput, 0, len(items))
 	for _, item := range items {
-		config, err := configFromJSONString(item.Config)
+		config, err := configStructFromJSONString(item.Config)
 		if err != nil {
 			return nil, fmt.Errorf("resource '%s': %w", item.Identifier.ValueString(), err)
 		}
-		result = append(result, api.ResourceProviderResource{
+		result = append(result, &apiv1.ResourceInput{
 			Name:       item.Name.ValueString(),
 			Identifier: item.Identifier.ValueString(),
 			Kind:       item.Kind.ValueString(),
 			Version:    item.Version.ValueString(),
 			Config:     config,
 			Metadata:   resourceMetadataFromMap(item.Metadata),
-			CreatedAt:  now,
 		})
 	}
 	return result, nil
 }
 
-func configFromJSONString(s types.String) (map[string]interface{}, error) {
+// configStructFromJSONString parses a JSON-object string into a *structpb.Struct.
+// An empty/null/unknown value yields a nil struct (an absent config).
+func configStructFromJSONString(s types.String) (*structpb.Struct, error) {
 	if s.IsNull() || s.IsUnknown() || s.ValueString() == "" {
-		return map[string]interface{}{}, nil
+		return nil, nil
 	}
 	var config map[string]interface{}
 	if err := json.Unmarshal([]byte(s.ValueString()), &config); err != nil {
 		return nil, fmt.Errorf("config must be a JSON object: %w", err)
 	}
-	return config, nil
+	return structpb.NewStruct(config)
 }
 
-func configToJSONString(m map[string]interface{}) types.String {
+// configStructToJSONString renders a *structpb.Struct config back to the
+// JSON-string form held in state. An empty or nil struct yields a null value.
+func configStructToJSONString(s *structpb.Struct) types.String {
+	if s == nil {
+		return types.StringNull()
+	}
+	m := s.AsMap()
 	if len(m) == 0 {
 		return types.StringNull()
 	}

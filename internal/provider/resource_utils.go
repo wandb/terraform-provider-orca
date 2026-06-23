@@ -4,20 +4,16 @@ package provider
 
 import (
 	"context"
-	"fmt"
 	"strings"
-	"time"
 
+	"github.com/google/cel-go/cel"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
-func descriptionValue(description *string) types.String {
-	if description == nil {
-		return types.StringNull()
-	}
-	return types.StringValue(*description)
-}
+// celEnv is used only to parse selector strings into an AST so we can compare
+// them structurally. Parsing is purely syntactic and needs no declarations.
+var celEnv, _ = cel.NewEnv()
 
 func stringMapPointer(value types.Map) *map[string]string {
 	if value.IsNull() || value.IsUnknown() {
@@ -42,36 +38,6 @@ func stringMapValue(value *map[string]string) types.Map {
 	return result
 }
 
-const waitForResourceTimeout = 5 * time.Minute
-
-// waitForResource polls check until it returns true or 5 minutes have elapsed.
-// check should return (true, nil) when the resource exists, (false, nil) to keep
-// polling, or (false, err) to abort immediately. Uses exponential backoff starting
-// at 1s and capped at 10s.
-func waitForResource(ctx context.Context, check func() (bool, error)) error {
-	deadline := time.Now().Add(waitForResourceTimeout)
-	interval := 1 * time.Second
-
-	for {
-		exists, err := check()
-		if err != nil {
-			return err
-		}
-		if exists {
-			return nil
-		}
-		if time.Now().After(deadline) {
-			return fmt.Errorf("resource not found after %s", waitForResourceTimeout)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(interval):
-		}
-		interval = min(interval*2, 10*time.Second)
-	}
-}
-
 func normalizeCEL(value types.String) string {
 	if value.IsNull() || value.IsUnknown() {
 		return ""
@@ -79,14 +45,47 @@ func normalizeCEL(value types.String) string {
 	return strings.Join(strings.Fields(value.ValueString()), " ")
 }
 
+// celCanonical parses a CEL selector and re-emits it in cel-go's canonical
+// form, collapsing the author's parenthesization to a single deterministic
+// shape. Returns ("", false) when the string does not parse.
+func celCanonical(expr string) (string, bool) {
+	ast, iss := celEnv.Parse(expr)
+	if iss != nil && iss.Err() != nil {
+		return "", false
+	}
+	out, err := cel.AstToString(ast)
+	if err != nil {
+		return "", false
+	}
+	return out, true
+}
+
+// celEquivalent reports whether two selector strings are the same expression.
+// It compares canonical ASTs so that diffs which differ only in
+// parenthesization or whitespace — the engine re-serializes selectors fully
+// parenthesized — are treated as equal. It does NOT recognize boolean-algebra
+// rewrites (e.g. factoring `(p && a) || (p && b)` into `p && (a || b)`); those
+// produce different ASTs and remain a visible diff. When either side fails to
+// parse, it falls back to whitespace-collapsed string comparison.
+func celEquivalent(a, b string) bool {
+	ca, okA := celCanonical(a)
+	cb, okB := celCanonical(b)
+	if okA && okB {
+		return ca == cb
+	}
+	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
+}
+
 // celNormalizedPlanModifier keeps the prior state value when the planned
-// config and state differ only by CEL-equivalent whitespace. The API collapses
-// whitespace on the server side, so without this, a multi-line heredoc config
-// would drift from the single-line form returned by Read on every plan.
+// config and state are the same CEL expression. The engine re-serializes
+// selectors in a canonical, fully-parenthesized form, so the value returned by
+// Read differs textually (parentheses, whitespace) from a hand-written config
+// even when the expression is identical. Without this, every plan would show a
+// spurious in-place update.
 type celNormalizedPlanModifier struct{}
 
 func (celNormalizedPlanModifier) Description(_ context.Context) string {
-	return "Suppresses diffs when the planned and prior-state CEL differ only by whitespace."
+	return "Suppresses diffs when the planned and prior-state CEL are the same expression."
 }
 
 func (m celNormalizedPlanModifier) MarkdownDescription(ctx context.Context) string {
@@ -97,7 +96,7 @@ func (celNormalizedPlanModifier) PlanModifyString(_ context.Context, req planmod
 	if req.StateValue.IsNull() || req.PlanValue.IsUnknown() {
 		return
 	}
-	if normalizeCEL(req.PlanValue) == normalizeCEL(req.StateValue) {
+	if celEquivalent(req.PlanValue.ValueString(), req.StateValue.ValueString()) {
 		resp.PlanValue = req.StateValue
 	}
 }

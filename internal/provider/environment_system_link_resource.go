@@ -4,9 +4,10 @@ package provider
 
 import (
 	"context"
-	"net/http"
 	"strings"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -103,20 +104,16 @@ func (r *EnvironmentSystemLinkResource) Create(ctx context.Context, req resource
 		return
 	}
 
-	workspaceID := r.workspace.ID.String()
 	systemID := data.SystemID.ValueString()
 	environmentID := data.EnvironmentID.ValueString()
 
-	linkResp, err := r.workspace.Client.LinkEnvironmentToSystemWithResponse(
-		ctx, workspaceID, systemID, environmentID,
-	)
+	_, err := r.workspace.System.LinkEnvironmentToSystem(ctx, connect.NewRequest(&apiv1.EnvironmentSystemLinkRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		SystemId:      systemID,
+		EnvironmentId: environmentID,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to link environment to system", err.Error())
-		return
-	}
-
-	if linkResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to link environment to system", formatResponseError(linkResp.StatusCode(), linkResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to link environment to system", err)
 		return
 	}
 
@@ -135,23 +132,26 @@ func (r *EnvironmentSystemLinkResource) Read(ctx context.Context, req resource.R
 	systemID := data.SystemID.ValueString()
 	environmentID := data.EnvironmentID.ValueString()
 
-	linkResp, err := r.workspace.Client.GetEnvironmentSystemLinkWithResponse(
-		ctx, r.workspace.ID.String(), systemID, environmentID,
-	)
+	got, err := r.workspace.System.GetEnvironmentSystemLink(ctx, connect.NewRequest(&apiv1.EnvironmentSystemLinkRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		SystemId:      systemID,
+		EnvironmentId: environmentID,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read environment system link", err.Error())
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
+			return
+		}
+		addConnectError(&resp.Diagnostics, "Failed to read environment system link", err)
 		return
 	}
 
-	switch linkResp.StatusCode() {
-	case http.StatusOK:
-		data.ID = types.StringValue(systemID + "/" + environmentID)
-		resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-	default:
-		resp.Diagnostics.AddError("Failed to read environment system link", formatResponseError(linkResp.StatusCode(), linkResp.Body))
-	}
+	link := got.Msg
+	data.SystemID = types.StringValue(link.GetSystemId())
+	data.EnvironmentID = types.StringValue(link.GetEnvironmentId())
+	data.ID = types.StringValue(link.GetSystemId() + "/" + link.GetEnvironmentId())
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
 func (r *EnvironmentSystemLinkResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -168,24 +168,13 @@ func (r *EnvironmentSystemLinkResource) Delete(ctx context.Context, req resource
 		return
 	}
 
-	workspaceID := r.workspace.ID.String()
-	systemID := data.SystemID.ValueString()
-	environmentID := data.EnvironmentID.ValueString()
-
-	unlinkResp, err := r.workspace.Client.UnlinkEnvironmentFromSystemWithResponse(
-		ctx, workspaceID, systemID, environmentID,
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to unlink environment from system", err.Error())
+	_, err := r.workspace.System.UnlinkEnvironmentFromSystem(ctx, connect.NewRequest(&apiv1.EnvironmentSystemLinkRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		SystemId:      data.SystemID.ValueString(),
+		EnvironmentId: data.EnvironmentID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to unlink environment from system", err)
 		return
-	}
-
-	switch unlinkResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusNotFound:
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to unlink environment from system", formatResponseError(unlinkResp.StatusCode(), unlinkResp.Body))
 	}
 }

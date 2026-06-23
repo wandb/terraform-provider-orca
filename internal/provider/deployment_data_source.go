@@ -6,8 +6,9 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
@@ -97,46 +98,38 @@ func (d *DeploymentDataSource) Read(ctx context.Context, req datasource.ReadRequ
 		return
 	}
 
-	depResp, err := d.workspace.Client.GetDeploymentByNameWithResponse(
-		ctx, d.workspace.ID.String(), data.Name.ValueString(),
-	)
+	depResp, err := d.workspace.Deployment.GetDeploymentByName(ctx, connect.NewRequest(&apiv1.GetDeploymentByNameRequest{
+		WorkspaceId: d.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read deployment",
-			fmt.Sprintf("Failed to read deployment with name '%s': %s", data.Name.ValueString(), err.Error()),
-		)
+		if isNotFound(err) {
+			resp.Diagnostics.AddError(
+				"Deployment not found",
+				fmt.Sprintf("No deployment with name '%s' in workspace '%s'", data.Name.ValueString(), d.workspace.WorkspaceID()),
+			)
+			return
+		}
+		addConnectError(&resp.Diagnostics, "Failed to read deployment", err)
 		return
 	}
 
-	if depResp.StatusCode() == http.StatusNotFound {
+	dep := depResp.Msg.GetDeployment()
+	if dep == nil {
 		resp.Diagnostics.AddError(
 			"Deployment not found",
-			fmt.Sprintf("No deployment with name '%s' in workspace '%s'", data.Name.ValueString(), d.workspace.ID.String()),
+			fmt.Sprintf("No deployment with name '%s' in workspace '%s'", data.Name.ValueString(), d.workspace.WorkspaceID()),
 		)
 		return
 	}
 
-	if depResp.StatusCode() != http.StatusOK || depResp.JSON200 == nil {
-		resp.Diagnostics.AddError("Failed to read deployment", formatResponseError(depResp.StatusCode(), depResp.Body))
-		return
-	}
-
-	dep := depResp.JSON200.Deployment
-	data.ID = types.StringValue(dep.Id)
-	data.Name = types.StringValue(dep.Name)
-	data.Slug = types.StringValue(dep.Slug)
-	data.Description = descriptionValue(dep.Description)
-	data.Metadata = stringMapValue(dep.Metadata)
-	if dep.ResourceSelector != nil && *dep.ResourceSelector != "" {
-		data.ResourceSelector = types.StringValue(*dep.ResourceSelector)
-	} else {
-		data.ResourceSelector = types.StringNull()
-	}
-	if dep.JobAgentSelector != "" {
-		data.JobAgentSelector = types.StringValue(dep.JobAgentSelector)
-	} else {
-		data.JobAgentSelector = types.StringNull()
-	}
+	data.ID = types.StringValue(dep.GetId())
+	data.Name = types.StringValue(dep.GetName())
+	data.Slug = types.StringValue(dep.GetSlug())
+	data.Description = optionalString(dep.GetDescription())
+	data.Metadata = metadataMapValue(dep.GetMetadata())
+	data.ResourceSelector = optionalString(dep.GetResourceSelector())
+	data.JobAgentSelector = optionalSelector(dep.GetJobAgentSelector())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

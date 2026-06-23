@@ -5,10 +5,10 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
-	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var (
@@ -280,58 +281,41 @@ func (r *JobAgentResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	jobAgentId := data.ID.ValueString()
-	if data.ID.IsNull() || data.ID.IsUnknown() || jobAgentId == "" {
-		jobAgentId = uuid.NewString()
-		data.ID = types.StringValue(jobAgentId)
-	}
-
-	requestBody := api.RequestJobAgentUpsertJSONRequestBody{
-		Config:   *config,
-		Metadata: stringMapPointer(data.Metadata),
-		Name:     data.Name.ValueString(),
-		Type:     jobAgentType,
-	}
-
-	jobAgentResp, err := r.workspace.Client.RequestJobAgentUpsertWithResponse(
-		ctx, r.workspace.ID.String(), jobAgentId, requestBody,
-	)
+	configStruct, err := jobAgentConfigStruct(config)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create job agent", err.Error())
 		return
 	}
 
-	if jobAgentResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create job agent", formatResponseError(jobAgentResp.StatusCode(), jobAgentResp.Body))
+	created, err := r.workspace.Job.UpsertJobAgent(ctx, connect.NewRequest(&apiv1.UpsertJobAgentRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		Name:        data.Name.ValueString(),
+		Type:        jobAgentType,
+		Config:      configStruct,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to create job agent", err)
 		return
 	}
 
-	if jobAgentResp.JSON202 == nil || jobAgentResp.JSON202.Id == "" {
+	agentId := created.Msg.GetId()
+	if agentId == "" {
 		resp.Diagnostics.AddError("Failed to create job agent", "Empty job agent ID in response")
 		return
 	}
 
-	agentId := jobAgentResp.JSON202.Id
 	data.ID = types.StringValue(agentId)
 
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetJobAgentWithResponse(ctx, r.workspace.ID.String(), agentId)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	got, err := r.workspace.Job.GetJobAgent(ctx, connect.NewRequest(&apiv1.GetJobAgentRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		JobAgentId:  agentId,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create job agent", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to read job agent after create", err)
 		return
 	}
+
+	applyJobAgent(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -343,45 +327,46 @@ func (r *JobAgentResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	jobAgentResp, err := r.workspace.Client.GetJobAgentWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
+	got, err := r.workspace.Job.GetJobAgent(ctx, connect.NewRequest(&apiv1.GetJobAgentRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		JobAgentId:  data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read job agent",
-			fmt.Sprintf("Failed to read job agent with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
-		return
-	}
-
-	switch jobAgentResp.StatusCode() {
-	case http.StatusOK:
-		if jobAgentResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read job agent", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	case http.StatusBadRequest:
-		resp.Diagnostics.AddError("Failed to read job agent", "Bad request")
+		addConnectError(&resp.Diagnostics, "Failed to read job agent", err)
 		return
 	}
 
-	if jobAgentResp.StatusCode() != http.StatusOK {
-		resp.Diagnostics.AddError("Failed to read job agent", formatResponseError(jobAgentResp.StatusCode(), jobAgentResp.Body))
+	jobAgent := got.Msg
+	if jobAgent.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read job agent", "Empty job agent ID in response")
 		return
 	}
 
-	jobAgent := jobAgentResp.JSON200
-	data.ID = types.StringValue(jobAgent.Id)
-	data.Name = types.StringValue(jobAgent.Name)
-	if jobAgent.Metadata == nil {
+	applyJobAgent(&data, jobAgent)
+
+	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// applyJobAgent maps a proto JobAgent onto the model. Sensitive fields the API
+// never returns (Terraform Cloud token, Argo Workflow apiKey/webhookSecret) are
+// preserved from whatever is already in data — prior state on Read, the plan on
+// Create/Update — since the server response cannot supply them.
+func applyJobAgent(data *JobAgentResourceModel, jobAgent *apiv1.JobAgent) {
+	data.ID = types.StringValue(jobAgent.GetId())
+	data.Name = types.StringValue(jobAgent.GetName())
+	if md := jobAgent.GetMetadata(); md == nil {
 		empty, _ := types.MapValueFrom(context.Background(), types.StringType, map[string]string{})
 		data.Metadata = empty
 	} else {
-		data.Metadata = stringMapValue(&jobAgent.Metadata)
+		data.Metadata = stringMapValue(&md)
 	}
 
-	// Preserve sensitive fields that the API doesn't return.
+	// Capture sensitive fields the API doesn't return before the blocks are
+	// rebuilt from the server config.
 	var priorToken types.String
 	if len(data.TerraformCloud) > 0 {
 		priorToken = data.TerraformCloud[0].Token
@@ -393,20 +378,15 @@ func (r *JobAgentResource) Read(ctx context.Context, req resource.ReadRequest, r
 		priorArgoWorkflowWebhookSecret = data.ArgoWorkflow[0].WebhookSecret
 	}
 
-	setJobAgentBlocksFromAPI(&data, jobAgent.Type, jobAgent.Config)
+	setJobAgentBlocksFromAPI(data, jobAgent.GetType(), jobAgentConfigMap(jobAgent.GetConfig()))
 
-	// Restore token from prior state since the API never returns it.
 	if len(data.TerraformCloud) > 0 && !priorToken.IsNull() {
 		data.TerraformCloud[0].Token = priorToken
 	}
-
-	// Restore ArgoWorkflow apiKey and webhookSecret from prior state since the API never returns them.
 	if len(data.ArgoWorkflow) > 0 {
 		data.ArgoWorkflow[0].ApiKey = priorArgoWorkflowApiKey
 		data.ArgoWorkflow[0].WebhookSecret = priorArgoWorkflowWebhookSecret
 	}
-
-	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
 func (r *JobAgentResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -426,35 +406,43 @@ func (r *JobAgentResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	requestBody := api.RequestJobAgentUpsertJSONRequestBody{
-		Config:   *config,
-		Metadata: stringMapPointer(data.Metadata),
-		Name:     data.Name.ValueString(),
-		Type:     jobAgentType,
-	}
-
-	jobAgentResp, err := r.workspace.Client.RequestJobAgentUpsertWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(), requestBody,
-	)
+	configStruct, err := jobAgentConfigStruct(config)
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to update job agent",
-			fmt.Sprintf("Failed to update job agent with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
+		resp.Diagnostics.AddError("Failed to update job agent", err.Error())
 		return
 	}
 
-	if jobAgentResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update job agent", formatResponseError(jobAgentResp.StatusCode(), jobAgentResp.Body))
+	upserted, err := r.workspace.Job.UpsertJobAgent(ctx, connect.NewRequest(&apiv1.UpsertJobAgentRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		JobAgentId:  data.ID.ValueString(),
+		Name:        data.Name.ValueString(),
+		Type:        jobAgentType,
+		Config:      configStruct,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to update job agent", err)
 		return
 	}
 
-	if jobAgentResp.JSON202 == nil || jobAgentResp.JSON202.Id == "" {
+	agentId := upserted.Msg.GetId()
+	if agentId == "" {
 		resp.Diagnostics.AddError("Failed to update job agent", "Empty job agent ID in response")
 		return
 	}
 
-	data.ID = types.StringValue(jobAgentResp.JSON202.Id)
+	data.ID = types.StringValue(agentId)
+
+	got, err := r.workspace.Job.GetJobAgent(ctx, connect.NewRequest(&apiv1.GetJobAgentRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		JobAgentId:  agentId,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read job agent after update", err)
+		return
+	}
+
+	applyJobAgent(&data, got.Msg)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -465,28 +453,14 @@ func (r *JobAgentResource) Delete(ctx context.Context, req resource.DeleteReques
 		return
 	}
 
-	jobAgentResp, err := r.workspace.Client.RequestJobAgentDeletionWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete job agent", fmt.Sprintf("Failed to delete job agent: %s", err.Error()))
+	_, err := r.workspace.Job.DeleteJobAgent(ctx, connect.NewRequest(&apiv1.DeleteJobAgentRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		JobAgentId:  data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete job agent", err)
 		return
 	}
-
-	switch jobAgentResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusBadRequest:
-		if jobAgentResp.JSON400 != nil && jobAgentResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete job agent", fmt.Sprintf("Bad request: %s", *jobAgentResp.JSON400.Error))
-			return
-		}
-	case http.StatusNotFound:
-		if jobAgentResp.JSON404 != nil && jobAgentResp.JSON404.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete job agent", fmt.Sprintf("Not found: %s", *jobAgentResp.JSON404.Error))
-			return
-		}
-	}
-
-	resp.Diagnostics.AddError("Failed to delete job agent", formatResponseError(jobAgentResp.StatusCode(), jobAgentResp.Body))
 }
 
 type JobAgentResourceModel struct {
@@ -726,6 +700,30 @@ func setJobAgentBlocksFromAPI(data *JobAgentResourceModel, jobType string, confi
 			},
 		}
 	}
+}
+
+// jobAgentConfigStruct converts the generic config map produced by
+// jobAgentConfigFromModel into the *structpb.Struct expected by the proto
+// request. A nil config yields a nil struct (an absent config).
+func jobAgentConfigStruct(config *map[string]interface{}) (*structpb.Struct, error) {
+	if config == nil {
+		return nil, nil
+	}
+	s, err := structpb.NewStruct(*config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid job agent config: %w", err)
+	}
+	return s, nil
+}
+
+// jobAgentConfigMap converts the *structpb.Struct returned by the proto API
+// into the generic map consumed by setJobAgentBlocksFromAPI. A nil struct
+// yields an empty map so downstream block mapping has a safe value to read.
+func jobAgentConfigMap(config *structpb.Struct) map[string]interface{} {
+	if config == nil {
+		return map[string]interface{}{}
+	}
+	return config.AsMap()
 }
 
 func toInt64(value interface{}) int64 {

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"math"
 	"math/big"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
-	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -88,59 +88,35 @@ func (r *DeploymentVariableResource) Create(ctx context.Context, req resource.Cr
 		return
 	}
 
-	variableID := data.ID.ValueString()
-	if data.ID.IsNull() || data.ID.IsUnknown() || variableID == "" {
-		variableID = uuid.NewString()
-		data.ID = types.StringValue(variableID)
-	}
-
-	requestBody := api.RequestDeploymentVariableUpdateJSONRequestBody{
+	created, err := r.workspace.Deployment.UpsertDeploymentVariable(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
 		DeploymentId: data.DeploymentId.ValueString(),
 		Key:          data.Key.ValueString(),
 		Description:  data.Description.ValueStringPointer(),
-	}
-
-	variableResp, err := r.workspace.Client.RequestDeploymentVariableUpdateWithResponse(
-		ctx, r.workspace.ID.String(), variableID, requestBody,
-	)
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create deployment variable", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to create deployment variable", err)
 		return
 	}
 
-	if variableResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create deployment variable", formatResponseError(variableResp.StatusCode(), variableResp.Body))
-		return
-	}
-
-	if variableResp.JSON202 == nil || variableResp.JSON202.Id == "" {
+	variableID := created.Msg.GetId()
+	if variableID == "" {
 		resp.Diagnostics.AddError("Failed to create deployment variable", "Empty deployment variable ID in response")
 		return
 	}
 
-	varId := variableResp.JSON202.Id
-	data.ID = types.StringValue(varId)
+	data.ID = types.StringValue(variableID)
 
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetDeploymentVariableWithResponse(
-			ctx, r.workspace.ID.String(), varId,
-		)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	got, err := r.workspace.Deployment.GetDeploymentVariable(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		VariableId:  variableID,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create deployment variable", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to read deployment variable after create", err)
 		return
 	}
+
+	applyDeploymentVariable(&data, got.Msg.GetVariable())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -152,47 +128,35 @@ func (r *DeploymentVariableResource) Read(ctx context.Context, req resource.Read
 		return
 	}
 
-	variableResp, err := r.workspace.Client.GetDeploymentVariableWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
+	got, err := r.workspace.Deployment.GetDeploymentVariable(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		VariableId:  data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read deployment variable",
-			fmt.Sprintf("Failed to read deployment variable with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
-		return
-	}
-
-	switch variableResp.StatusCode() {
-	case http.StatusOK:
-		if variableResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read deployment variable", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	case http.StatusBadRequest:
-		if variableResp.JSON400 != nil && variableResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to read deployment variable", fmt.Sprintf("Bad request: %s", *variableResp.JSON400.Error))
-			return
-		}
-		resp.Diagnostics.AddError("Failed to read deployment variable", "Bad request")
+		addConnectError(&resp.Diagnostics, "Failed to read deployment variable", err)
 		return
 	}
 
-	if variableResp.StatusCode() != http.StatusOK {
-		resp.Diagnostics.AddError("Failed to read deployment variable", formatResponseError(variableResp.StatusCode(), variableResp.Body))
+	variable := got.Msg.GetVariable()
+	if variable == nil || variable.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read deployment variable", "Empty response from server")
 		return
 	}
 
-	variable := variableResp.JSON200.Variable
-	data.ID = types.StringValue(variable.Id)
-	data.DeploymentId = types.StringValue(variable.DeploymentId)
-	data.Key = types.StringValue(variable.Key)
-	data.Description = descriptionValue(variable.Description)
+	applyDeploymentVariable(&data, variable)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func applyDeploymentVariable(data *DeploymentVariableResourceModel, v *apiv1.DeploymentVariable) {
+	data.ID = types.StringValue(v.GetId())
+	data.DeploymentId = types.StringValue(v.GetDeploymentId())
+	data.Key = types.StringValue(v.GetKey())
+	data.Description = optionalString(v.GetDescription())
 }
 
 func (r *DeploymentVariableResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -202,34 +166,33 @@ func (r *DeploymentVariableResource) Update(ctx context.Context, req resource.Up
 		return
 	}
 
-	requestBody := api.RequestDeploymentVariableUpdateJSONRequestBody{
+	upserted, err := r.workspace.Deployment.UpsertDeploymentVariable(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		VariableId:   data.ID.ValueString(),
 		DeploymentId: data.DeploymentId.ValueString(),
 		Key:          data.Key.ValueString(),
 		Description:  data.Description.ValueStringPointer(),
-	}
-
-	variableResp, err := r.workspace.Client.RequestDeploymentVariableUpdateWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(), requestBody,
-	)
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to update deployment variable",
-			fmt.Sprintf("Failed to update deployment variable with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
+		addConnectError(&resp.Diagnostics, "Failed to update deployment variable", err)
 		return
 	}
 
-	if variableResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update deployment variable", formatResponseError(variableResp.StatusCode(), variableResp.Body))
+	if id := upserted.Msg.GetId(); id != "" {
+		data.ID = types.StringValue(id)
+	}
+
+	got, err := r.workspace.Deployment.GetDeploymentVariable(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		VariableId:  data.ID.ValueString(),
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read deployment variable after update", err)
 		return
 	}
 
-	if variableResp.JSON202 == nil || variableResp.JSON202.Id == "" {
-		resp.Diagnostics.AddError("Failed to update deployment variable", "Empty deployment variable ID in response")
-		return
-	}
+	applyDeploymentVariable(&data, got.Msg.GetVariable())
 
-	data.ID = types.StringValue(variableResp.JSON202.Id)
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -240,30 +203,14 @@ func (r *DeploymentVariableResource) Delete(ctx context.Context, req resource.De
 		return
 	}
 
-	variableResp, err := r.workspace.Client.RequestDeploymentVariableDeletionWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete deployment variable", fmt.Sprintf("Failed to delete deployment variable: %s", err.Error()))
+	_, err := r.workspace.Deployment.DeleteDeploymentVariable(ctx, connect.NewRequest(&apiv1.DeleteDeploymentVariableRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		VariableId:  data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete deployment variable", err)
 		return
 	}
-
-	switch variableResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusBadRequest:
-		if variableResp.JSON400 != nil && variableResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete deployment variable", fmt.Sprintf("Bad request: %s", *variableResp.JSON400.Error))
-			return
-		}
-	case http.StatusNotFound:
-		if variableResp.JSON404 != nil && variableResp.JSON404.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete deployment variable", fmt.Sprintf("Not found: %s", *variableResp.JSON404.Error))
-			return
-		}
-	}
-
-	resp.Diagnostics.AddError("Failed to delete deployment variable", formatResponseError(variableResp.StatusCode(), variableResp.Body))
 }
 
 type DeploymentVariableResourceModel struct {
@@ -271,109 +218,6 @@ type DeploymentVariableResourceModel struct {
 	DeploymentId types.String `tfsdk:"deployment_id"`
 	Key          types.String `tfsdk:"key"`
 	Description  types.String `tfsdk:"description"`
-}
-
-func literalValueFromDynamic(value types.Dynamic) (*api.LiteralValue, error) {
-	if value.IsNull() || value.IsUnknown() {
-		return nil, nil
-	}
-
-	tfValue, err := value.ToTerraformValue(context.Background())
-	if err != nil {
-		return nil, err
-	}
-
-	decoded, err := terraformValueToInterface(tfValue)
-	if err != nil {
-		return nil, err
-	}
-
-	return literalValueFromInterface(decoded)
-}
-
-func literalValueFromInterface(value interface{}) (*api.LiteralValue, error) {
-	var literal api.LiteralValue
-
-	switch v := value.(type) {
-	case nil:
-		if err := literal.FromNullValue(true); err != nil {
-			return nil, err
-		}
-		return &literal, nil
-	case bool:
-		if err := literal.FromBooleanValue(v); err != nil {
-			return nil, err
-		}
-	case string:
-		if err := literal.FromStringValue(v); err != nil {
-			return nil, err
-		}
-	case int:
-		if err := literal.FromIntegerValue(v); err != nil {
-			return nil, err
-		}
-	case int32:
-		if err := literal.FromIntegerValue(api.IntegerValue(v)); err != nil {
-			return nil, err
-		}
-	case int64:
-		if err := literal.FromIntegerValue(api.IntegerValue(v)); err != nil {
-			return nil, err
-		}
-	case float32:
-		if err := literal.FromNumberValue(api.NumberValue(v)); err != nil {
-			return nil, err
-		}
-	case float64:
-		if math.Trunc(v) == v {
-			if err := literal.FromIntegerValue(api.IntegerValue(int64(v))); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := literal.FromNumberValue(api.NumberValue(v)); err != nil {
-				return nil, err
-			}
-		}
-	case map[string]interface{}:
-		if err := literal.FromObjectValue(api.ObjectValue{Object: v}); err != nil {
-			return nil, err
-		}
-	case []interface{}:
-		return nil, fmt.Errorf("unsupported literal value type []interface{}")
-	default:
-		return nil, fmt.Errorf("unsupported literal value type %T", value)
-	}
-
-	return &literal, nil
-}
-
-func literalValueToDynamic(value *api.LiteralValue) types.Dynamic {
-	if value == nil {
-		return types.DynamicNull()
-	}
-
-	if v, err := value.AsBooleanValue(); err == nil {
-		return types.DynamicValue(types.BoolValue(v))
-	}
-	if v, err := value.AsIntegerValue(); err == nil {
-		return types.DynamicValue(types.Int64Value(int64(v)))
-	}
-	if v, err := value.AsNumberValue(); err == nil {
-		return types.DynamicValue(types.Float64Value(float64(v)))
-	}
-	if v, err := value.AsStringValue(); err == nil {
-		return types.DynamicValue(types.StringValue(v))
-	}
-	if v, err := value.AsObjectValue(); err == nil {
-		if attrValue, _, err := attrValueFromInterface(v.Object); err == nil {
-			return types.DynamicValue(attrValue)
-		}
-	}
-	if _, err := value.AsNullValue(); err == nil {
-		return types.DynamicNull()
-	}
-
-	return types.DynamicNull()
 }
 
 func attrValueFromInterface(value interface{}) (attr.Value, attr.Type, error) {

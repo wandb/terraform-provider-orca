@@ -3,13 +3,12 @@
 package provider
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
 	"time"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -23,6 +22,8 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"google.golang.org/protobuf/types/known/structpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 var _ resource.Resource = &PolicyResource{}
@@ -509,112 +510,50 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
+	// Assign stable rule IDs and creation timestamps before building the proto
+	// rules so the values persist into state and match what is sent.
+	ensurePolicyIDs(&data, nil)
+	ensurePolicyRuleCreatedAt(&data, nil)
+
 	rules, diags := policyRulesFromModel(data)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
 
-	priority := int(defaultInt64(data.Priority, 0))
+	priority := int32(defaultInt64(data.Priority, 0))
 	enabled := defaultBool(data.Enabled, true)
 	selector := data.Selector.ValueString()
 
-	policyID := uuid.NewString()
-	data.ID = types.StringValue(policyID)
-	ensurePolicyIDs(&data, nil)
-	ensurePolicyRuleCreatedAt(&data, nil)
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
 
-	requestBody := policyRequestPayload{
+	created, err := r.workspace.Policy.CreatePolicy(ctx, connect.NewRequest(&apiv1.CreatePolicyRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
 		Description: data.Description.ValueStringPointer(),
-		Metadata:    stringMapPointer(data.Metadata),
 		Priority:    &priority,
 		Enabled:     &enabled,
-		Rules:       &rules,
 		Selector:    &selector,
-	}
-
-	setPolicyIDOnRules(&requestBody, policyID)
-
-	body, err := json.Marshal(requestBody)
+		Metadata:    metadata,
+		Rules:       rules,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create policy", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to create policy", err)
 		return
 	}
 
-	policyResp, err := r.workspace.Client.RequestPolicyCreationWithBodyWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create policy", err.Error())
+	policy := created.Msg
+	if policy.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to create policy", "Empty policy ID in response")
 		return
 	}
 
-	if policyResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create policy", formatResponseError(policyResp.StatusCode(), policyResp.Body))
-		return
-	}
-
-	if policyResp.JSON202 == nil || policyResp.JSON202.Id == "" {
-		resp.Diagnostics.AddError("Failed to create policy", "Empty response from server")
-		return
-	}
-
-	createdID := policyResp.JSON202.Id
-	data.ID = types.StringValue(createdID)
-
-	if createdID != policyID {
-		updateBody := policyRequestPayload{
-			Name:        data.Name.ValueString(),
-			Description: data.Description.ValueStringPointer(),
-			Metadata:    stringMapPointer(data.Metadata),
-			Priority:    &priority,
-			Enabled:     &enabled,
-			Rules:       &rules,
-			Selector:    &selector,
-		}
-		setPolicyIDOnRules(&updateBody, createdID)
-		updatePayload, err := json.Marshal(updateBody)
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to update policy", err.Error())
-			return
-		}
-		updateResp, err := r.workspace.Client.RequestPolicyUpsertWithBodyWithResponse(
-			ctx,
-			r.workspace.ID.String(),
-			createdID,
-			"application/json",
-			bytes.NewReader(updatePayload),
-		)
-		if err != nil {
-			resp.Diagnostics.AddError("Failed to update policy", err.Error())
-			return
-		}
-		if updateResp.StatusCode() != http.StatusAccepted {
-			resp.Diagnostics.AddError("Failed to update policy", formatResponseError(updateResp.StatusCode(), updateResp.Body))
-			return
-		}
-	}
-
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetPolicyWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create policy", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+	diags = applyPolicyToModel(&data, policy)
+	resp.Diagnostics.Append(diags...)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 
@@ -628,50 +567,30 @@ func (r *PolicyResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	policyResp, err := r.workspace.Client.GetPolicyWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
+	got, err := r.workspace.Policy.GetPolicy(ctx, connect.NewRequest(&apiv1.GetPolicyRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		PolicyId:    data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read policy", err.Error())
-		return
-	}
-
-	switch policyResp.StatusCode() {
-	case http.StatusOK:
-		if policyResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read policy", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to read policy", formatResponseError(policyResp.StatusCode(), policyResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to read policy", err)
 		return
 	}
 
-	policy := policyResp.JSON200
-	data.ID = types.StringValue(policy.Id)
-	data.Name = types.StringValue(policy.Name)
-	data.Description = descriptionValue(policy.Description)
-	data.Metadata = stringMapValue(&policy.Metadata)
-	data.Priority = types.Int64Value(int64(policy.Priority))
-	data.Enabled = types.BoolValue(policy.Enabled)
+	policy := got.Msg
+	if policy.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read policy", "Empty policy ID in response")
+		return
+	}
 
-	data.Selector = types.StringValue(policy.Selector)
-
-	rules, diags := policyRulesToModel(policy.Rules)
+	diags := applyPolicyToModel(&data, policy)
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	data.VersionSelector = rules.VersionSelector
-	data.VersionCooldown = rules.VersionCooldown
-	data.DeploymentWindow = rules.DeploymentWindow
-	data.DeploymentDependency = rules.DeploymentDependency
-	data.Verification = rules.Verification
-	data.GradualRollout = rules.GradualRollout
-	data.AnyApproval = rules.AnyApproval
-	data.EnvironmentProgression = rules.EnvironmentProgression
-	data.PlanValidationOpa = rules.PlanValidationOpa
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -696,73 +615,42 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	priority := int(defaultInt64(data.Priority, 0))
+	priority := int32(defaultInt64(data.Priority, 0))
 	enabled := defaultBool(data.Enabled, true)
 	selector := data.Selector.ValueString()
 
-	requestBody := policyRequestPayload{
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
+
+	upserted, err := r.workspace.Policy.UpsertPolicy(ctx, connect.NewRequest(&apiv1.UpsertPolicyRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		PolicyId:    data.ID.ValueString(),
 		Name:        data.Name.ValueString(),
 		Description: data.Description.ValueStringPointer(),
-		Metadata:    stringMapPointer(data.Metadata),
-		Priority:    &priority,
-		Enabled:     &enabled,
-		Rules:       &rules,
-		Selector:    &selector,
-	}
-
-	setPolicyIDOnRules(&requestBody, data.ID.ValueString())
-
-	body, err := json.Marshal(requestBody)
+		Priority:    priority,
+		Enabled:     enabled,
+		Selector:    selector,
+		Metadata:    metadata,
+		Rules:       rules,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to update policy", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to update policy", err)
 		return
 	}
 
-	policyResp, err := r.workspace.Client.RequestPolicyUpsertWithBodyWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.ID.ValueString(),
-		"application/json",
-		bytes.NewReader(body),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to update policy", err.Error())
+	policy := upserted.Msg
+	if policy.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to update policy", "Empty policy ID in response")
 		return
 	}
 
-	if policyResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update policy", formatResponseError(policyResp.StatusCode(), policyResp.Body))
-		return
-	}
-
-	if policyResp.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to update policy", "Empty response from server")
-		return
-	}
-
-	policy := policyResp.JSON202
-	data.ID = types.StringValue(policy.Id)
-	data.Name = types.StringValue(policy.Name)
-	data.Description = descriptionValue(policy.Description)
-	data.Metadata = stringMapValue(&policy.Metadata)
-	data.Priority = types.Int64Value(int64(policy.Priority))
-	data.Enabled = types.BoolValue(policy.Enabled)
-	data.Selector = types.StringValue(policy.Selector)
-
-	readRules, ruleDiags := policyRulesToModel(policy.Rules)
-	resp.Diagnostics.Append(ruleDiags...)
+	diags = applyPolicyToModel(&data, policy)
+	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	data.VersionSelector = readRules.VersionSelector
-	data.VersionCooldown = readRules.VersionCooldown
-	data.DeploymentWindow = readRules.DeploymentWindow
-	data.DeploymentDependency = readRules.DeploymentDependency
-	data.Verification = readRules.Verification
-	data.GradualRollout = readRules.GradualRollout
-	data.AnyApproval = readRules.AnyApproval
-	data.EnvironmentProgression = readRules.EnvironmentProgression
-	data.PlanValidationOpa = readRules.PlanValidationOpa
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -774,22 +662,42 @@ func (r *PolicyResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	policyResp, err := r.workspace.Client.RequestPolicyDeletionWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete policy", err.Error())
+	_, err := r.workspace.Policy.DeletePolicy(ctx, connect.NewRequest(&apiv1.DeletePolicyRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		PolicyId:    data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete policy", err)
 		return
 	}
+}
 
-	switch policyResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to delete policy", formatResponseError(policyResp.StatusCode(), policyResp.Body))
-		return
+// applyPolicyToModel maps a proto Policy returned by the API into the Terraform
+// model, including the rule blocks. The schema/attribute names and state shape
+// are preserved exactly; only the transport changed.
+func applyPolicyToModel(data *PolicyResourceModel, policy *apiv1.Policy) diag.Diagnostics {
+	data.ID = types.StringValue(policy.GetId())
+	data.Name = types.StringValue(policy.GetName())
+	data.Description = optionalString(policy.GetDescription())
+	data.Metadata = metadataMapValue(policy.GetMetadata())
+	data.Priority = types.Int64Value(int64(policy.GetPriority()))
+	data.Enabled = types.BoolValue(policy.GetEnabled())
+	data.Selector = types.StringValue(policy.GetSelector())
+
+	rules, diags := policyRulesToModel(policy.GetRules())
+	if diags.HasError() {
+		return diags
 	}
+	data.VersionSelector = rules.VersionSelector
+	data.VersionCooldown = rules.VersionCooldown
+	data.DeploymentWindow = rules.DeploymentWindow
+	data.DeploymentDependency = rules.DeploymentDependency
+	data.Verification = rules.Verification
+	data.GradualRollout = rules.GradualRollout
+	data.AnyApproval = rules.AnyApproval
+	data.EnvironmentProgression = rules.EnvironmentProgression
+	data.PlanValidationOpa = rules.PlanValidationOpa
+	return diags
 }
 
 type PolicyResourceModel struct {
@@ -917,31 +825,6 @@ type policyRulesModel struct {
 	PlanValidationOpa      []PolicyPlanValidationOpa
 }
 
-type policyRequestPayload struct {
-	Description *string              `json:"description,omitempty"`
-	Enabled     *bool                `json:"enabled,omitempty"`
-	Metadata    *map[string]string   `json:"metadata,omitempty"`
-	Name        string               `json:"name"`
-	Priority    *int                 `json:"priority,omitempty"`
-	Rules       *[]policyRequestRule `json:"rules,omitempty"`
-	Selector    *string              `json:"selector,omitempty"`
-}
-
-type policyRequestRule struct {
-	CreatedAt              string                          `json:"createdAt"`
-	Id                     string                          `json:"id"`
-	DeploymentDependency   *api.DeploymentDependencyRule   `json:"deploymentDependency,omitempty"`
-	DeploymentWindow       *api.DeploymentWindowRule       `json:"deploymentWindow,omitempty"`
-	Verification           *api.VerificationRule           `json:"verification,omitempty"`
-	VersionCooldown        *api.VersionCooldownRule        `json:"versionCooldown,omitempty"`
-	VersionSelector        *api.VersionSelectorRule        `json:"versionSelector,omitempty"`
-	GradualRollout         *api.GradualRolloutRule         `json:"gradualRollout,omitempty"`
-	AnyApproval            *api.AnyApprovalRule            `json:"anyApproval,omitempty"`
-	EnvironmentProgression *api.EnvironmentProgressionRule `json:"environmentProgression,omitempty"`
-	PlanValidationOpa      *api.PlanValidationOpaRule      `json:"planValidationOpa,omitempty"`
-	PolicyId               *string                         `json:"policyId,omitempty"`
-}
-
 func selectorValueSet(value types.String) bool {
 	return !value.IsNull() && !value.IsUnknown() && value.ValueString() != ""
 }
@@ -953,11 +836,13 @@ func selectorIDValue(value types.String) string {
 	return uuid.NewString()
 }
 
-func createdAtValue(value types.String) string {
+func createdAtTimestamp(value types.String) *timestamppb.Timestamp {
 	if selectorValueSet(value) {
-		return value.ValueString()
+		if t, err := time.Parse(time.RFC3339, value.ValueString()); err == nil {
+			return timestamppb.New(t)
+		}
 	}
-	return time.Now().UTC().Format(time.RFC3339)
+	return timestamppb.New(time.Now().UTC())
 }
 
 func formatDuration(value time.Duration) string {
@@ -995,122 +880,114 @@ func defaultBool(value types.Bool, fallback bool) bool {
 	return value.ValueBool()
 }
 
-func policyRulesFromModel(data PolicyResourceModel) ([]policyRequestRule, diag.Diagnostics) {
+// policyRulesFromModel builds the proto PolicyRule list from the Terraform
+// model. Each rule kind is attached to its own *PolicyRule carrying the rule
+// id/policy_id/created_at envelope.
+func policyRulesFromModel(data PolicyResourceModel) ([]*apiv1.PolicyRule, diag.Diagnostics) {
 	var diags diag.Diagnostics
-	rules := make([]policyRequestRule, 0)
+	rules := make([]*apiv1.PolicyRule, 0)
 
 	for _, vs := range data.VersionSelector {
-		id := selectorIDValue(vs.ID)
 		cel := normalizeCEL(vs.Selector)
 		if cel == "" {
 			diags.AddError("Invalid version selector", "selector must be set")
 			continue
 		}
-		rule := api.VersionSelectorRule{
+		rule := &apiv1.VersionSelectorRule{
 			Selector: cel,
 		}
 		if selectorValueSet(vs.Description) {
-			desc := vs.Description.ValueString()
-			rule.Description = &desc
+			rule.Description = vs.Description.ValueStringPointer()
 		}
-		rules = append(rules, policyRequestRule{
-			CreatedAt:       createdAtValue(vs.CreatedAt),
-			Id:              id,
-			VersionSelector: &rule,
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:              selectorIDValue(vs.ID),
+			CreatedAt:       createdAtTimestamp(vs.CreatedAt),
+			VersionSelector: rule,
 		})
 	}
 
 	for _, cooldown := range data.VersionCooldown {
-		id := selectorIDValue(cooldown.ID)
 		seconds, err := parseDurationSeconds(cooldown.Duration)
 		if err != nil {
 			diags.AddError("Invalid version cooldown duration", err.Error())
 			continue
 		}
-		rules = append(rules, policyRequestRule{
-			CreatedAt: createdAtValue(cooldown.CreatedAt),
-			Id:        id,
-			VersionCooldown: &api.VersionCooldownRule{
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:        selectorIDValue(cooldown.ID),
+			CreatedAt: createdAtTimestamp(cooldown.CreatedAt),
+			VersionCooldown: &apiv1.VersionCooldownRule{
 				IntervalSeconds: int32(seconds),
 			},
 		})
 	}
 
 	for _, window := range data.DeploymentWindow {
-		id := selectorIDValue(window.ID)
-		allowWindow := defaultBool(window.AllowWindow, true)
-		rule := api.DeploymentWindowRule{
-			AllowWindow:     allowWindow,
+		rule := &apiv1.DeploymentWindowRule{
+			AllowWindow:     defaultBool(window.AllowWindow, true),
 			DurationMinutes: int32(window.DurationMinutes.ValueInt64()),
 			Rrule:           window.Rrule.ValueString(),
 		}
 		if selectorValueSet(window.Timezone) {
-			timezone := window.Timezone.ValueString()
-			rule.Timezone = &timezone
+			rule.Timezone = window.Timezone.ValueStringPointer()
 		}
-		rules = append(rules, policyRequestRule{
-			CreatedAt:        createdAtValue(window.CreatedAt),
-			Id:               id,
-			DeploymentWindow: &rule,
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:               selectorIDValue(window.ID),
+			CreatedAt:        createdAtTimestamp(window.CreatedAt),
+			DeploymentWindow: rule,
 		})
 	}
 
 	for _, dep := range data.DeploymentDependency {
-		id := selectorIDValue(dep.ID)
-		rules = append(rules, policyRequestRule{
-			CreatedAt: createdAtValue(dep.CreatedAt),
-			Id:        id,
-			DeploymentDependency: &api.DeploymentDependencyRule{
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:        selectorIDValue(dep.ID),
+			CreatedAt: createdAtTimestamp(dep.CreatedAt),
+			DeploymentDependency: &apiv1.DeploymentDependencyRule{
 				DependsOn: dep.DependsOnSelector.ValueString(),
 			},
 		})
 	}
 
 	for _, verification := range data.Verification {
-		id := selectorIDValue(verification.ID)
 		verificationRule, err := policyVerificationRuleFromModel(verification)
 		if err != nil {
 			diags.AddError("Invalid verification rule", err.Error())
 			continue
 		}
-		rules = append(rules, policyRequestRule{
-			CreatedAt:    createdAtValue(verification.CreatedAt),
-			Id:           id,
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:           selectorIDValue(verification.ID),
+			CreatedAt:    createdAtTimestamp(verification.CreatedAt),
 			Verification: verificationRule,
 		})
 	}
 
 	for _, rollout := range data.GradualRollout {
-		id := selectorIDValue(rollout.ID)
-		rules = append(rules, policyRequestRule{
-			CreatedAt: createdAtValue(rollout.CreatedAt),
-			Id:        id,
-			GradualRollout: &api.GradualRolloutRule{
-				RolloutType:       api.GradualRolloutRuleRolloutType(rollout.RolloutType.ValueString()),
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:        selectorIDValue(rollout.ID),
+			CreatedAt: createdAtTimestamp(rollout.CreatedAt),
+			GradualRollout: &apiv1.GradualRolloutRule{
+				RolloutType:       rollout.RolloutType.ValueString(),
 				TimeScaleInterval: int32(rollout.TimeScaleInterval.ValueInt64()),
 			},
 		})
 	}
 
 	for _, approval := range data.AnyApproval {
-		id := selectorIDValue(approval.ID)
-		rules = append(rules, policyRequestRule{
-			CreatedAt: createdAtValue(approval.CreatedAt),
-			Id:        id,
-			AnyApproval: &api.AnyApprovalRule{
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:        selectorIDValue(approval.ID),
+			CreatedAt: createdAtTimestamp(approval.CreatedAt),
+			AnyApproval: &apiv1.AnyApprovalRule{
 				MinApprovals: int32(approval.MinApprovals.ValueInt64()),
 			},
 		})
 	}
 
 	for _, progression := range data.EnvironmentProgression {
-		id := selectorIDValue(progression.ID)
 		cel := normalizeCEL(progression.DependsOnEnvironmentSelector)
 		if cel == "" {
 			diags.AddError("Invalid environment progression selector", "depends_on_environment_selector must be set")
 			continue
 		}
-		rule := api.EnvironmentProgressionRule{
+		rule := &apiv1.EnvironmentProgressionRule{
 			DependsOnEnvironmentSelector: cel,
 		}
 		if float64ValueSet(progression.MinimumSuccessPercentage) {
@@ -1118,307 +995,289 @@ func policyRulesFromModel(data PolicyResourceModel) ([]policyRequestRule, diag.D
 			rule.MinimumSuccessPercentage = &val
 		}
 		if int64ValueSet(progression.MinimumSoakTimeMinutes) {
-			val := int32(progression.MinimumSoakTimeMinutes.ValueInt64())
-			rule.MinimumSoakTimeMinutes = &val
+			rule.MinimumSoakTimeMinutes = int32(progression.MinimumSoakTimeMinutes.ValueInt64())
 		}
 		if int64ValueSet(progression.MaximumAgeHours) {
 			val := int32(progression.MaximumAgeHours.ValueInt64())
 			rule.MaximumAgeHours = &val
 		}
-		rules = append(rules, policyRequestRule{
-			CreatedAt:              createdAtValue(progression.CreatedAt),
-			Id:                     id,
-			EnvironmentProgression: &rule,
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:                     selectorIDValue(progression.ID),
+			CreatedAt:              createdAtTimestamp(progression.CreatedAt),
+			EnvironmentProgression: rule,
 		})
 	}
 
 	for _, opa := range data.PlanValidationOpa {
-		id := selectorIDValue(opa.ID)
 		name := opa.Name.ValueString()
 		rego := opa.Rego.ValueString()
 		if name == "" || rego == "" {
 			diags.AddError("Invalid plan validation rule", "name and rego must be set")
 			continue
 		}
-		rule := api.PlanValidationOpaRule{
+		rule := &apiv1.PlanValidationOpaRule{
 			Name: name,
 			Rego: rego,
 		}
 		if selectorValueSet(opa.Description) {
-			desc := opa.Description.ValueString()
-			rule.Description = &desc
+			rule.Description = opa.Description.ValueStringPointer()
 		}
-		rules = append(rules, policyRequestRule{
-			CreatedAt:         createdAtValue(opa.CreatedAt),
-			Id:                id,
-			PlanValidationOpa: &rule,
+		rules = append(rules, &apiv1.PolicyRule{
+			Id:                selectorIDValue(opa.ID),
+			CreatedAt:         createdAtTimestamp(opa.CreatedAt),
+			PlanValidationOpa: rule,
 		})
 	}
 
 	return rules, diags
 }
 
-func policyVerificationRuleFromModel(model PolicyVerificationRule) (*api.VerificationRule, error) {
+// policyVerificationRuleFromModel builds a proto VerificationRule. Proto carries
+// the metrics as a list of structpb.Struct values rather than typed messages, so
+// each metric is encoded as the same JSON object the engine accepts
+// (VerificationMetricSpec shape).
+func policyVerificationRuleFromModel(model PolicyVerificationRule) (*apiv1.VerificationRule, error) {
 	if len(model.Metric) == 0 {
 		return nil, fmt.Errorf("verification rule must define at least one metric")
 	}
 
-	metrics := make([]api.VerificationMetricSpec, 0, len(model.Metric))
+	metrics := make([]*structpb.Struct, 0, len(model.Metric))
 	for _, metric := range model.Metric {
-		spec, err := policyVerificationMetricFromModel(metric)
+		spec, err := policyVerificationMetricStruct(metric)
 		if err != nil {
 			return nil, err
 		}
 		metrics = append(metrics, spec)
 	}
 
-	rule := &api.VerificationRule{
+	rule := &apiv1.VerificationRule{
 		Metrics: metrics,
 	}
 
 	if selectorValueSet(model.TriggerOn) {
-		triggerOn := api.VerificationRuleTriggerOn(model.TriggerOn.ValueString())
-		rule.TriggerOn = &triggerOn
+		rule.TriggerOn = model.TriggerOn.ValueStringPointer()
 	}
 
 	return rule, nil
 }
 
-func policyVerificationMetricFromModel(model PolicyVerificationMetric) (api.VerificationMetricSpec, error) {
+// policyVerificationMetricStruct encodes a single verification metric as a
+// structpb.Struct matching the engine's VerificationMetricSpec JSON contract.
+func policyVerificationMetricStruct(model PolicyVerificationMetric) (*structpb.Struct, error) {
 	if model.Success == nil {
-		return api.VerificationMetricSpec{}, fmt.Errorf("metric success block is required")
+		return nil, fmt.Errorf("metric success block is required")
 	}
 
 	hasSleep := model.Sleep != nil
 	hasDatadog := model.Datadog != nil
 	if !hasSleep && !hasDatadog {
-		return api.VerificationMetricSpec{}, fmt.Errorf("exactly one of sleep or datadog provider block is required")
+		return nil, fmt.Errorf("exactly one of sleep or datadog provider block is required")
 	}
 	if hasSleep && hasDatadog {
-		return api.VerificationMetricSpec{}, fmt.Errorf("only one of sleep or datadog provider block can be set")
+		return nil, fmt.Errorf("only one of sleep or datadog provider block can be set")
 	}
 
 	intervalSeconds, err := parseDurationSeconds(model.Interval)
 	if err != nil {
-		return api.VerificationMetricSpec{}, err
+		return nil, err
 	}
 
-	count := int(model.Count.ValueInt64())
+	count := model.Count.ValueInt64()
 	if count <= 0 {
-		return api.VerificationMetricSpec{}, fmt.Errorf("metric count must be greater than zero")
+		return nil, fmt.Errorf("metric count must be greater than zero")
 	}
 
 	successCondition := model.Success.Condition.ValueString()
 	if successCondition == "" {
-		return api.VerificationMetricSpec{}, fmt.Errorf("success condition must be set")
+		return nil, fmt.Errorf("success condition must be set")
 	}
 
-	var provider api.MetricProvider
+	var provider map[string]any
 	if hasSleep {
-		provider, err = policySleepProviderFromModel(*model.Sleep)
+		provider, err = policySleepProviderMap(*model.Sleep)
 	} else {
-		provider, err = policyDatadogProviderFromModel(*model.Datadog)
+		provider, err = policyDatadogProviderMap(*model.Datadog)
 	}
 	if err != nil {
-		return api.VerificationMetricSpec{}, err
+		return nil, err
 	}
 
-	spec := api.VerificationMetricSpec{
-		Name:             model.Name.ValueString(),
-		IntervalSeconds:  int32(intervalSeconds),
-		Count:            count,
-		SuccessCondition: successCondition,
-		Provider:         provider,
+	spec := map[string]any{
+		"name":             model.Name.ValueString(),
+		"intervalSeconds":  float64(intervalSeconds),
+		"count":            float64(count),
+		"successCondition": successCondition,
+		"provider":         provider,
 	}
 
 	if int64ValueSet(model.Success.Threshold) {
-		threshold := int(model.Success.Threshold.ValueInt64())
-		spec.SuccessThreshold = &threshold
+		spec["successThreshold"] = float64(model.Success.Threshold.ValueInt64())
 	}
 	if model.Failure != nil && selectorValueSet(model.Failure.Condition) {
-		condition := model.Failure.Condition.ValueString()
-		spec.FailureCondition = &condition
+		spec["failureCondition"] = model.Failure.Condition.ValueString()
 	}
 	if model.Failure != nil && int64ValueSet(model.Failure.Threshold) {
-		threshold := int(model.Failure.Threshold.ValueInt64())
-		spec.FailureThreshold = &threshold
+		spec["failureThreshold"] = float64(model.Failure.Threshold.ValueInt64())
 	}
 
-	return spec, nil
+	return structpb.NewStruct(spec)
 }
 
-func policySleepProviderFromModel(model PolicySleepProvider) (api.MetricProvider, error) {
+func policySleepProviderMap(model PolicySleepProvider) (map[string]any, error) {
 	durationSeconds := defaultInt64(model.DurationSeconds, 30)
 	if durationSeconds < 1 || durationSeconds > 3600 {
-		return api.MetricProvider{}, fmt.Errorf("sleep duration_seconds must be between 1 and 3600, got %d", durationSeconds)
+		return nil, fmt.Errorf("sleep duration_seconds must be between 1 and 3600, got %d", durationSeconds)
 	}
 
-	sleepProvider := api.SleepMetricProvider{
-		Type:            api.Sleep,
-		DurationSeconds: int32(durationSeconds),
-	}
-
-	var provider api.MetricProvider
-	if err := provider.FromSleepMetricProvider(sleepProvider); err != nil {
-		return api.MetricProvider{}, err
-	}
-
-	return provider, nil
+	return map[string]any{
+		"type":            "sleep",
+		"durationSeconds": float64(durationSeconds),
+	}, nil
 }
 
-func policyDatadogProviderFromModel(model PolicyDatadogProvider) (api.MetricProvider, error) {
+func policyDatadogProviderMap(model PolicyDatadogProvider) (map[string]any, error) {
 	if !selectorValueSet(model.ApiKey) {
-		return api.MetricProvider{}, fmt.Errorf("datadog api_key is required")
+		return nil, fmt.Errorf("datadog api_key is required")
 	}
 	if !selectorValueSet(model.AppKey) {
-		return api.MetricProvider{}, fmt.Errorf("datadog app_key is required")
+		return nil, fmt.Errorf("datadog app_key is required")
 	}
 	if model.Queries.IsNull() || model.Queries.IsUnknown() {
-		return api.MetricProvider{}, fmt.Errorf("datadog queries is required")
+		return nil, fmt.Errorf("datadog queries is required")
 	}
 
 	queries, err := mapStringValue(model.Queries)
 	if err != nil {
-		return api.MetricProvider{}, fmt.Errorf("invalid provider queries: %w", err)
+		return nil, fmt.Errorf("invalid provider queries: %w", err)
 	}
 
-	datadog := api.DatadogMetricProvider{
-		Type:    api.Datadog,
-		ApiKey:  model.ApiKey.ValueString(),
-		AppKey:  model.AppKey.ValueString(),
-		Queries: queries,
+	queriesAny := make(map[string]any, len(queries))
+	for k, v := range queries {
+		queriesAny[k] = v
+	}
+
+	provider := map[string]any{
+		"type":    "datadog",
+		"apiKey":  model.ApiKey.ValueString(),
+		"appKey":  model.AppKey.ValueString(),
+		"queries": queriesAny,
 	}
 
 	if selectorValueSet(model.Site) {
-		site := model.Site.ValueString()
-		datadog.Site = &site
+		provider["site"] = model.Site.ValueString()
 	}
 	if selectorValueSet(model.Interval) {
 		intervalSeconds, err := parseDurationSeconds(model.Interval)
 		if err != nil {
-			return api.MetricProvider{}, err
+			return nil, err
 		}
-		seconds := intervalSeconds
-		datadog.IntervalSeconds = &seconds
+		provider["intervalSeconds"] = float64(intervalSeconds)
 	}
 	if selectorValueSet(model.Aggregator) {
-		aggregator := api.DatadogMetricProviderAggregator(model.Aggregator.ValueString())
-		datadog.Aggregator = &aggregator
+		provider["aggregator"] = model.Aggregator.ValueString()
 	}
 	if selectorValueSet(model.Formula) {
-		formula := model.Formula.ValueString()
-		datadog.Formula = &formula
-	}
-
-	var provider api.MetricProvider
-	if err := provider.FromDatadogMetricProvider(datadog); err != nil {
-		return api.MetricProvider{}, err
+		provider["formula"] = model.Formula.ValueString()
 	}
 
 	return provider, nil
 }
 
-func policyRulesToModel(rules []api.PolicyRule) (policyRulesModel, diag.Diagnostics) {
+// policyRulesToModel maps the proto PolicyRule list back into the Terraform
+// model by inspecting which rule sub-message is non-nil on each rule.
+func policyRulesToModel(rules []*apiv1.PolicyRule) (policyRulesModel, diag.Diagnostics) {
 	var diags diag.Diagnostics
 	result := policyRulesModel{}
 
 	for _, rule := range rules {
-		if rule.VersionSelector != nil {
+		if rule == nil {
+			continue
+		}
+		createdAt := optionalString(rfc3339(rule.GetCreatedAt()))
+		id := types.StringValue(rule.GetId())
+
+		switch {
+		case rule.GetVersionSelector() != nil:
+			vs := rule.GetVersionSelector()
 			model := PolicyVersionSelector{
-				CreatedAt:   types.StringValue(rule.CreatedAt),
-				ID:          types.StringValue(rule.Id),
-				Selector:    types.StringValue(rule.VersionSelector.Selector),
-				Description: types.StringNull(),
-			}
-			if rule.VersionSelector.Description != nil {
-				model.Description = types.StringValue(*rule.VersionSelector.Description)
+				CreatedAt:   createdAt,
+				ID:          id,
+				Selector:    types.StringValue(vs.GetSelector()),
+				Description: optionalString(vs.GetDescription()),
 			}
 			result.VersionSelector = append(result.VersionSelector, model)
-		}
-		if rule.VersionCooldown != nil {
-			duration := time.Duration(rule.VersionCooldown.IntervalSeconds) * time.Second
+		case rule.GetVersionCooldown() != nil:
+			duration := time.Duration(rule.GetVersionCooldown().GetIntervalSeconds()) * time.Second
 			result.VersionCooldown = append(result.VersionCooldown, PolicyVersionCooldown{
-				CreatedAt: types.StringValue(rule.CreatedAt),
-				ID:        types.StringValue(rule.Id),
+				CreatedAt: createdAt,
+				ID:        id,
 				Duration:  types.StringValue(formatDuration(duration)),
 			})
-		}
-		if rule.DeploymentWindow != nil {
+		case rule.GetDeploymentWindow() != nil:
+			window := rule.GetDeploymentWindow()
 			model := PolicyDeploymentWindow{
-				CreatedAt:       types.StringValue(rule.CreatedAt),
-				ID:              types.StringValue(rule.Id),
-				DurationMinutes: types.Int64Value(int64(rule.DeploymentWindow.DurationMinutes)),
-				Rrule:           types.StringValue(rule.DeploymentWindow.Rrule),
-				Timezone:        types.StringNull(),
-				AllowWindow:     types.BoolValue(rule.DeploymentWindow.AllowWindow),
-			}
-			if rule.DeploymentWindow.Timezone != nil {
-				model.Timezone = types.StringValue(*rule.DeploymentWindow.Timezone)
+				CreatedAt:       createdAt,
+				ID:              id,
+				DurationMinutes: types.Int64Value(int64(window.GetDurationMinutes())),
+				Rrule:           types.StringValue(window.GetRrule()),
+				Timezone:        optionalString(window.GetTimezone()),
+				AllowWindow:     types.BoolValue(window.GetAllowWindow()),
 			}
 			result.DeploymentWindow = append(result.DeploymentWindow, model)
-		}
-		if rule.DeploymentDependency != nil {
+		case rule.GetDeploymentDependency() != nil:
 			result.DeploymentDependency = append(result.DeploymentDependency, PolicyDeploymentDependency{
-				CreatedAt:         types.StringValue(rule.CreatedAt),
-				ID:                types.StringValue(rule.Id),
-				DependsOnSelector: types.StringValue(rule.DeploymentDependency.DependsOn),
+				CreatedAt:         createdAt,
+				ID:                id,
+				DependsOnSelector: types.StringValue(rule.GetDeploymentDependency().GetDependsOn()),
 			})
-		}
-		if rule.Verification != nil {
-			verification, err := policyVerificationRuleToModel(rule.Verification)
+		case rule.GetVerification() != nil:
+			verification, err := policyVerificationRuleToModel(rule.GetVerification())
 			if err != nil {
 				diags.AddError("Invalid verification rule", err.Error())
 				continue
 			}
-			verification.CreatedAt = types.StringValue(rule.CreatedAt)
-			verification.ID = types.StringValue(rule.Id)
+			verification.CreatedAt = createdAt
+			verification.ID = id
 			result.Verification = append(result.Verification, verification)
-		}
-		if rule.GradualRollout != nil {
+		case rule.GetGradualRollout() != nil:
+			rollout := rule.GetGradualRollout()
 			result.GradualRollout = append(result.GradualRollout, PolicyGradualRollout{
-				CreatedAt:         types.StringValue(rule.CreatedAt),
-				ID:                types.StringValue(rule.Id),
-				RolloutType:       types.StringValue(string(rule.GradualRollout.RolloutType)),
-				TimeScaleInterval: types.Int64Value(int64(rule.GradualRollout.TimeScaleInterval)),
+				CreatedAt:         createdAt,
+				ID:                id,
+				RolloutType:       types.StringValue(rollout.GetRolloutType()),
+				TimeScaleInterval: types.Int64Value(int64(rollout.GetTimeScaleInterval())),
 			})
-		}
-		if rule.AnyApproval != nil {
+		case rule.GetAnyApproval() != nil:
 			result.AnyApproval = append(result.AnyApproval, PolicyAnyApproval{
-				CreatedAt:    types.StringValue(rule.CreatedAt),
-				ID:           types.StringValue(rule.Id),
-				MinApprovals: types.Int64Value(int64(rule.AnyApproval.MinApprovals)),
+				CreatedAt:    createdAt,
+				ID:           id,
+				MinApprovals: types.Int64Value(int64(rule.GetAnyApproval().GetMinApprovals())),
 			})
-		}
-		if rule.EnvironmentProgression != nil {
+		case rule.GetEnvironmentProgression() != nil:
+			progression := rule.GetEnvironmentProgression()
 			model := PolicyEnvironmentProgression{
-				CreatedAt:                    types.StringValue(rule.CreatedAt),
-				ID:                           types.StringValue(rule.Id),
-				DependsOnEnvironmentSelector: types.StringValue(rule.EnvironmentProgression.DependsOnEnvironmentSelector),
+				CreatedAt:                    createdAt,
+				ID:                           id,
+				DependsOnEnvironmentSelector: types.StringValue(progression.GetDependsOnEnvironmentSelector()),
 				MinimumSuccessPercentage:     types.Float64Null(),
-				MinimumSoakTimeMinutes:       types.Int64Null(),
+				MinimumSoakTimeMinutes:       types.Int64Value(int64(progression.GetMinimumSoakTimeMinutes())),
 				MaximumAgeHours:              types.Int64Null(),
 			}
-			if rule.EnvironmentProgression.MinimumSuccessPercentage != nil {
-				model.MinimumSuccessPercentage = types.Float64Value(float64(*rule.EnvironmentProgression.MinimumSuccessPercentage))
+			if progression.MinimumSuccessPercentage != nil {
+				model.MinimumSuccessPercentage = types.Float64Value(float64(progression.GetMinimumSuccessPercentage()))
 			}
-			if rule.EnvironmentProgression.MinimumSoakTimeMinutes != nil {
-				model.MinimumSoakTimeMinutes = types.Int64Value(int64(*rule.EnvironmentProgression.MinimumSoakTimeMinutes))
-			}
-			if rule.EnvironmentProgression.MaximumAgeHours != nil {
-				model.MaximumAgeHours = types.Int64Value(int64(*rule.EnvironmentProgression.MaximumAgeHours))
+			if progression.MaximumAgeHours != nil {
+				model.MaximumAgeHours = types.Int64Value(int64(progression.GetMaximumAgeHours()))
 			}
 			result.EnvironmentProgression = append(result.EnvironmentProgression, model)
-		}
-		if rule.PlanValidationOpa != nil {
+		case rule.GetPlanValidationOpa() != nil:
+			opa := rule.GetPlanValidationOpa()
 			model := PolicyPlanValidationOpa{
-				CreatedAt:   types.StringValue(rule.CreatedAt),
-				ID:          types.StringValue(rule.Id),
-				Name:        types.StringValue(rule.PlanValidationOpa.Name),
-				Description: types.StringNull(),
-				Rego:        types.StringValue(rule.PlanValidationOpa.Rego),
-			}
-			if rule.PlanValidationOpa.Description != nil {
-				model.Description = types.StringValue(*rule.PlanValidationOpa.Description)
+				CreatedAt:   createdAt,
+				ID:          id,
+				Name:        types.StringValue(opa.GetName()),
+				Description: optionalString(opa.GetDescription()),
+				Rego:        types.StringValue(opa.GetRego()),
 			}
 			result.PlanValidationOpa = append(result.PlanValidationOpa, model)
 		}
@@ -1449,19 +1308,6 @@ func ensurePolicyRuleCreatedAt(plan *PolicyResourceModel, state *PolicyResourceM
 	mergeAnyApprovalCreatedAt(plan.AnyApproval, anyApprovalListFromState(state))
 	mergeEnvironmentProgressionCreatedAt(plan.EnvironmentProgression, environmentProgressionListFromState(state))
 	mergePlanValidationOpaCreatedAt(plan.PlanValidationOpa, planValidationOpaListFromState(state))
-}
-
-func setPolicyIDOnRules(request *policyRequestPayload, policyID string) {
-	if request == nil || request.Rules == nil {
-		return
-	}
-
-	for i := range *request.Rules {
-		if (*request.Rules)[i].PolicyId == nil || *(*request.Rules)[i].PolicyId == "" {
-			value := policyID
-			(*request.Rules)[i].PolicyId = &value
-		}
-	}
 }
 
 func versionSelectorListFromState(state *PolicyResourceModel) []PolicyVersionSelector {
@@ -1761,17 +1607,20 @@ func mergePlanValidationOpaCreatedAt(plan []PolicyPlanValidationOpa, state []Pol
 	}
 }
 
-func policyVerificationRuleToModel(rule *api.VerificationRule) (PolicyVerificationRule, error) {
+// policyVerificationRuleToModel converts a proto VerificationRule back into the
+// Terraform model. Each metric is a structpb.Struct that follows the engine's
+// VerificationMetricSpec JSON contract.
+func policyVerificationRuleToModel(rule *apiv1.VerificationRule) (PolicyVerificationRule, error) {
 	model := PolicyVerificationRule{
 		TriggerOn: types.StringNull(),
-		Metric:    make([]PolicyVerificationMetric, 0, len(rule.Metrics)),
+		Metric:    make([]PolicyVerificationMetric, 0, len(rule.GetMetrics())),
 	}
 
 	if rule.TriggerOn != nil {
-		model.TriggerOn = types.StringValue(string(*rule.TriggerOn))
+		model.TriggerOn = types.StringValue(rule.GetTriggerOn())
 	}
 
-	for _, metric := range rule.Metrics {
+	for _, metric := range rule.GetMetrics() {
 		m, err := policyVerificationMetricToModel(metric)
 		if err != nil {
 			return PolicyVerificationRule{}, err
@@ -1782,13 +1631,18 @@ func policyVerificationRuleToModel(rule *api.VerificationRule) (PolicyVerificati
 	return model, nil
 }
 
-func policyVerificationMetricToModel(metric api.VerificationMetricSpec) (PolicyVerificationMetric, error) {
+func policyVerificationMetricToModel(metric *structpb.Struct) (PolicyVerificationMetric, error) {
+	if metric == nil {
+		return PolicyVerificationMetric{}, fmt.Errorf("metric struct is nil")
+	}
+	raw := metric.AsMap()
+
 	model := PolicyVerificationMetric{
-		Name:     types.StringValue(metric.Name),
-		Interval: types.StringValue((time.Duration(metric.IntervalSeconds) * time.Second).String()),
-		Count:    types.Int64Value(int64(metric.Count)),
+		Name:     types.StringValue(structString(raw, "name")),
+		Interval: types.StringValue((time.Duration(structInt(raw, "intervalSeconds")) * time.Second).String()),
+		Count:    types.Int64Value(structInt(raw, "count")),
 		Success: &PolicyVerificationCondition{
-			Condition: types.StringValue(metric.SuccessCondition),
+			Condition: types.StringValue(structString(raw, "successCondition")),
 			Threshold: types.Int64Null(),
 		},
 		Failure: nil,
@@ -1796,79 +1650,92 @@ func policyVerificationMetricToModel(metric api.VerificationMetricSpec) (PolicyV
 		Datadog: nil,
 	}
 
-	if metric.SuccessThreshold != nil {
-		model.Success.Threshold = types.Int64Value(int64(*metric.SuccessThreshold))
+	if _, ok := raw["successThreshold"]; ok {
+		model.Success.Threshold = types.Int64Value(structInt(raw, "successThreshold"))
 	}
-	if metric.FailureCondition != nil || metric.FailureThreshold != nil {
+	_, hasFailureCondition := raw["failureCondition"]
+	_, hasFailureThreshold := raw["failureThreshold"]
+	if hasFailureCondition || hasFailureThreshold {
 		model.Failure = &PolicyVerificationCondition{
 			Condition: types.StringNull(),
 			Threshold: types.Int64Null(),
 		}
-		if metric.FailureCondition != nil {
-			model.Failure.Condition = types.StringValue(*metric.FailureCondition)
+		if hasFailureCondition {
+			model.Failure.Condition = types.StringValue(structString(raw, "failureCondition"))
 		}
-		if metric.FailureThreshold != nil {
-			model.Failure.Threshold = types.Int64Value(int64(*metric.FailureThreshold))
+		if hasFailureThreshold {
+			model.Failure.Threshold = types.Int64Value(structInt(raw, "failureThreshold"))
 		}
 	}
 
-	providerJSON, err := json.Marshal(metric.Provider)
-	if err != nil {
-		return PolicyVerificationMetric{}, fmt.Errorf("failed to marshal metric provider: %w", err)
-	}
-	var discriminator struct {
-		Type string `json:"type"`
-	}
-	if err := json.Unmarshal(providerJSON, &discriminator); err != nil {
-		return PolicyVerificationMetric{}, fmt.Errorf("failed to read metric provider type: %w", err)
+	provider, ok := raw["provider"].(map[string]any)
+	if !ok {
+		return PolicyVerificationMetric{}, fmt.Errorf("metric provider is missing or malformed")
 	}
 
-	switch discriminator.Type {
+	providerType := structString(provider, "type")
+	switch providerType {
 	case "sleep":
-		sleepProvider, err := metric.Provider.AsSleepMetricProvider()
-		if err != nil {
-			return PolicyVerificationMetric{}, fmt.Errorf("failed to parse sleep provider: %w", err)
-		}
 		model.Sleep = &PolicySleepProvider{
-			DurationSeconds: types.Int64Value(int64(sleepProvider.DurationSeconds)),
+			DurationSeconds: types.Int64Value(structInt(provider, "durationSeconds")),
 		}
 		return model, nil
 	case "datadog":
 	default:
-		return PolicyVerificationMetric{}, fmt.Errorf("unsupported metric provider type: %q", discriminator.Type)
+		return PolicyVerificationMetric{}, fmt.Errorf("unsupported metric provider type: %q", providerType)
 	}
 
-	datadogProvider, err := metric.Provider.AsDatadogMetricProvider()
-	if err != nil {
-		return PolicyVerificationMetric{}, fmt.Errorf("failed to parse datadog provider: %w", err)
+	datadog := &PolicyDatadogProvider{
+		Site:       types.StringNull(),
+		Interval:   types.StringNull(),
+		Queries:    types.MapNull(types.StringType),
+		ApiKey:     types.StringValue(structString(provider, "apiKey")),
+		AppKey:     types.StringValue(structString(provider, "appKey")),
+		Aggregator: types.StringNull(),
+		Formula:    types.StringNull(),
 	}
-
-	model.Datadog = &PolicyDatadogProvider{}
-	model.Datadog.Site = types.StringNull()
-	if datadogProvider.Site != nil {
-		model.Datadog.Site = types.StringValue(*datadogProvider.Site)
+	if _, ok := provider["site"]; ok {
+		datadog.Site = types.StringValue(structString(provider, "site"))
 	}
-	model.Datadog.Interval = types.StringNull()
-	if datadogProvider.IntervalSeconds != nil {
-		model.Datadog.Interval = types.StringValue((time.Duration(*datadogProvider.IntervalSeconds) * time.Second).String())
+	if _, ok := provider["intervalSeconds"]; ok {
+		datadog.Interval = types.StringValue((time.Duration(structInt(provider, "intervalSeconds")) * time.Second).String())
 	}
-	model.Datadog.Queries = types.MapNull(types.StringType)
-	if len(datadogProvider.Queries) > 0 {
-		result, _ := types.MapValueFrom(context.Background(), types.StringType, datadogProvider.Queries)
-		model.Datadog.Queries = result
+	if q, ok := provider["queries"].(map[string]any); ok && len(q) > 0 {
+		queries := make(map[string]string, len(q))
+		for k, v := range q {
+			if s, ok := v.(string); ok {
+				queries[k] = s
+			}
+		}
+		result, _ := types.MapValueFrom(context.Background(), types.StringType, queries)
+		datadog.Queries = result
 	}
-	model.Datadog.ApiKey = types.StringValue(datadogProvider.ApiKey)
-	model.Datadog.AppKey = types.StringValue(datadogProvider.AppKey)
-	model.Datadog.Aggregator = types.StringNull()
-	if datadogProvider.Aggregator != nil {
-		model.Datadog.Aggregator = types.StringValue(string(*datadogProvider.Aggregator))
+	if _, ok := provider["aggregator"]; ok {
+		datadog.Aggregator = types.StringValue(structString(provider, "aggregator"))
 	}
-	model.Datadog.Formula = types.StringNull()
-	if datadogProvider.Formula != nil {
-		model.Datadog.Formula = types.StringValue(*datadogProvider.Formula)
+	if _, ok := provider["formula"]; ok {
+		datadog.Formula = types.StringValue(structString(provider, "formula"))
 	}
+	model.Datadog = datadog
 
 	return model, nil
+}
+
+// structString reads a string value from a decoded structpb map.
+func structString(m map[string]any, key string) string {
+	if v, ok := m[key].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// structInt reads a numeric value from a decoded structpb map. structpb decodes
+// all JSON numbers as float64, so the value is rounded to the nearest int64.
+func structInt(m map[string]any, key string) int64 {
+	if v, ok := m[key].(float64); ok {
+		return int64(v)
+	}
+	return 0
 }
 
 func parseDurationSeconds(value types.String) (int64, error) {

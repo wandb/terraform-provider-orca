@@ -4,10 +4,9 @@ package provider
 
 import (
 	"context"
-	"fmt"
-	"net/http"
-	"strings"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -60,29 +59,23 @@ func (r *SystemResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	requestBody := api.RequestSystemCreationJSONRequestBody{
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
+
+	created, err := r.workspace.System.CreateSystem(ctx, connect.NewRequest(&apiv1.CreateSystemRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
 		Description: data.Description.ValueStringPointer(),
-		Metadata:    stringMapPointer(data.Metadata),
-	}
-	workspaceId := r.workspace.ID
-	system, err := r.workspace.Client.RequestSystemCreationWithResponse(ctx, workspaceId.String(), requestBody)
+		Metadata:    metadata,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create system", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to create system", err)
 		return
 	}
 
-	if system.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create system", formatResponseError(system.StatusCode(), system.Body))
-		return
-	}
-
-	if system.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to create system", "Empty response from server")
-		return
-	}
-
-	systemId := system.JSON202.Id
+	systemId := created.Msg.GetId()
 	if systemId == "" {
 		resp.Diagnostics.AddError("Failed to create system", "Empty system ID in response")
 		return
@@ -90,24 +83,16 @@ func (r *SystemResource) Create(ctx context.Context, req resource.CreateRequest,
 
 	data.ID = types.StringValue(systemId)
 
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetSystemWithResponse(ctx, r.workspace.ID.String(), systemId)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	got, err := r.workspace.System.GetSystem(ctx, connect.NewRequest(&apiv1.GetSystemRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		SystemId:    systemId,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create system", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to read system after create", err)
 		return
 	}
+
+	applySystem(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -120,29 +105,12 @@ func (r *SystemResource) Delete(ctx context.Context, req resource.DeleteRequest,
 		return
 	}
 
-	clientResp, err := r.workspace.Client.RequestSystemDeletionWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete system", fmt.Sprintf("Failed to delete system: %s", err.Error()))
-		return
-	}
-
-	switch clientResp.StatusCode() {
-	case http.StatusAccepted:
-		return
-	case http.StatusBadRequest:
-		if clientResp.JSON400 != nil && clientResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete system", fmt.Sprintf("Bad request: %s", *clientResp.JSON400.Error))
-			return
-		}
-	case http.StatusNotFound:
-		if clientResp.JSON404 != nil && clientResp.JSON404.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete system", fmt.Sprintf("Not found: %s", *clientResp.JSON404.Error))
-			return
-		}
-	}
-
-	if clientResp.StatusCode() != http.StatusAccepted || clientResp.StatusCode() != http.StatusNoContent {
-		resp.Diagnostics.AddError("Failed to delete system", formatResponseError(clientResp.StatusCode(), clientResp.Body))
+	_, err := r.workspace.System.DeleteSystem(ctx, connect.NewRequest(&apiv1.DeleteSystemRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		SystemId:    data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete system", err)
 		return
 	}
 }
@@ -156,52 +124,37 @@ func (r *SystemResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	system, err := r.workspace.Client.GetSystemWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
+	got, err := r.workspace.System.GetSystem(ctx, connect.NewRequest(&apiv1.GetSystemRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		SystemId:    data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read system",
-			fmt.Sprintf("Failed to read system with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
-		return
-	}
-
-	switch system.StatusCode() {
-	case http.StatusOK:
-		if system.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read system", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	case http.StatusBadRequest:
-		if system.JSON400 != nil && system.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to read system", fmt.Sprintf("Bad request: %s", *system.JSON400.Error))
-			return
-		}
-		resp.Diagnostics.AddError("Failed to read system", "Bad request")
+		addConnectError(&resp.Diagnostics, "Failed to read system", err)
 		return
 	}
 
-	if system.StatusCode() != http.StatusOK {
-		resp.Diagnostics.AddError("Failed to read system", formatResponseError(system.StatusCode(), system.Body))
-		return
-	}
-
-	if system.JSON200.Id == "" {
+	system := got.Msg
+	if system.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read system", "Empty system ID in response")
 		return
 	}
-	if system.JSON200.Name == "" {
-		resp.Diagnostics.AddError("Failed to read system", "Empty system name in response")
-		return
-	}
 
-	data.Name = types.StringValue(system.JSON200.Name)
-	data.Description = descriptionValue(system.JSON200.Description)
-	data.Metadata = stringMapValue(system.JSON200.Metadata)
+	applySystem(&data, system)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+// applySystem maps an authoritative *apiv1.System response onto the Terraform
+// resource model.
+func applySystem(data *SystemResourceModel, s *apiv1.System) {
+	data.ID = types.StringValue(s.GetId())
+	data.Name = types.StringValue(s.GetName())
+	data.Description = optionalString(s.GetDescription())
+	data.Metadata = metadataMapValue(s.GetMetadata())
 }
 
 // Schema implements resource.Resource.
@@ -251,53 +204,44 @@ func (r *SystemResource) Update(ctx context.Context, req resource.UpdateRequest,
 	// Preserve the existing ID since it is computed and not known from the plan.
 	data.ID = state.ID
 
-	requestBody := api.RequestSystemUpsertJSONRequestBody{
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
+
+	upserted, err := r.workspace.System.UpsertSystem(ctx, connect.NewRequest(&apiv1.UpsertSystemRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		SystemId:    data.ID.ValueString(),
 		Name:        data.Name.ValueString(),
 		Description: data.Description.ValueStringPointer(),
-		Metadata:    stringMapPointer(data.Metadata),
-	}
-	system, err := r.workspace.Client.RequestSystemUpsertWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(), requestBody,
-	)
-
+		Metadata:    metadata,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to update system",
-			fmt.Sprintf("Failed to update system with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
+		addConnectError(&resp.Diagnostics, "Failed to update system", err)
 		return
 	}
 
-	if system.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update system", formatResponseError(system.StatusCode(), system.Body))
+	systemId := data.ID.ValueString()
+	if id := upserted.Msg.GetId(); id != "" {
+		systemId = id
+	}
+
+	got, err := r.workspace.System.GetSystem(ctx, connect.NewRequest(&apiv1.GetSystemRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
+		SystemId:    systemId,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read system after update", err)
 		return
 	}
 
-	if system.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to update system", "Empty response from server")
-		return
-	}
-
-	systemId := system.JSON202.Id
-	data.ID = types.StringValue(systemId)
+	applySystem(&data, got.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
 func (r *SystemResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_system"
-}
-
-func formatResponseError(statusCode int, body []byte) string {
-	if len(body) > 0 {
-		return fmt.Sprintf("Status %d: %s", statusCode, strings.TrimSpace(string(body)))
-	}
-
-	if statusCode == 0 {
-		return "Missing response status from server"
-	}
-
-	return fmt.Sprintf("Status %d: %s", statusCode, http.StatusText(statusCode))
 }
 
 type SystemResourceModel struct {

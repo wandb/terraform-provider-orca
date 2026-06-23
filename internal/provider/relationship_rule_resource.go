@@ -4,9 +4,9 @@ package provider
 
 import (
 	"context"
-	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
@@ -117,64 +117,31 @@ func (r *RelationshipRuleResource) Create(ctx context.Context, req resource.Crea
 
 	cel := normalizeCEL(data.Cel)
 
-	metadata := map[string]string{}
-	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-		diags := data.Metadata.ElementsAs(ctx, &metadata, false)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
 	}
 
-	requestBody := api.CreateRelationshipRuleJSONRequestBody{
+	created, err := r.workspace.Policy.CreateRelationshipRule(ctx, connect.NewRequest(&apiv1.CreateRelationshipRuleRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
-		Reference:   data.Reference.ValueString(),
 		Description: data.Description.ValueStringPointer(),
+		Reference:   data.Reference.ValueString(),
 		Cel:         cel,
 		Metadata:    metadata,
-	}
-
-	createResp, err := r.workspace.Client.CreateRelationshipRuleWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		requestBody,
-	)
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create relationship rule", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to create relationship rule", err)
 		return
 	}
 
-	if createResp.StatusCode() != http.StatusCreated {
-		resp.Diagnostics.AddError("Failed to create relationship rule", formatResponseError(createResp.StatusCode(), createResp.Body))
-		return
-	}
-
-	if createResp.JSON201 == nil {
-		resp.Diagnostics.AddError("Failed to create relationship rule", "Empty response from server")
-		return
-	}
-
-	ruleId := createResp.JSON201.Id
-	data.ID = types.StringValue(ruleId)
-
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetRelationshipRuleWithResponse(ctx, r.workspace.ID.String(), ruleId)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create relationship rule", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
-		return
-	}
+	rule := created.Msg
+	data.ID = types.StringValue(rule.GetId())
+	data.Name = types.StringValue(rule.GetName())
+	data.Reference = types.StringValue(rule.GetReference())
+	data.Description = optionalString(rule.GetDescription())
+	data.Cel = types.StringValue(rule.GetCel())
+	data.Metadata = metadataMapValue(rule.GetMetadata())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -186,40 +153,26 @@ func (r *RelationshipRuleResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	ruleResp, err := r.workspace.Client.GetRelationshipRuleWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.ID.ValueString(),
-	)
+	got, err := r.workspace.Policy.GetRelationshipRule(ctx, connect.NewRequest(&apiv1.GetRelationshipRuleRequest{
+		WorkspaceId:        r.workspace.WorkspaceID(),
+		RelationshipRuleId: data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError(
-			"Failed to read relationship rule",
-			fmt.Sprintf("Failed to read relationship rule with ID '%s': %s", data.ID.ValueString(), err.Error()),
-		)
-		return
-	}
-
-	switch ruleResp.StatusCode() {
-	case http.StatusOK:
-		if ruleResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read relationship rule", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to read relationship rule", formatResponseError(ruleResp.StatusCode(), ruleResp.Body))
+		addConnectError(&resp.Diagnostics, "Failed to read relationship rule", err)
 		return
 	}
 
-	rule := ruleResp.JSON200
-	data.ID = types.StringValue(rule.Id)
-	data.Name = types.StringValue(rule.Name)
-	data.Reference = types.StringValue(rule.Reference)
-	data.Description = descriptionValue(rule.Description)
-	data.Cel = types.StringValue(rule.Cel)
-	data.Metadata = stringMapValue(&rule.Metadata)
+	rule := got.Msg
+	data.ID = types.StringValue(rule.GetId())
+	data.Name = types.StringValue(rule.GetName())
+	data.Reference = types.StringValue(rule.GetReference())
+	data.Description = optionalString(rule.GetDescription())
+	data.Cel = types.StringValue(rule.GetCel())
+	data.Metadata = metadataMapValue(rule.GetMetadata())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -238,40 +191,34 @@ func (r *RelationshipRuleResource) Update(ctx context.Context, req resource.Upda
 
 	cel := normalizeCEL(data.Cel)
 
-	metadata := map[string]string{}
-	if !data.Metadata.IsNull() && !data.Metadata.IsUnknown() {
-		diags := data.Metadata.ElementsAs(ctx, &metadata, false)
-		resp.Diagnostics.Append(diags...)
-		if resp.Diagnostics.HasError() {
-			return
-		}
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
 	}
 
-	requestBody := api.RequestRelationshipRuleUpsertJSONRequestBody{
-		Name:        data.Name.ValueString(),
-		Reference:   data.Reference.ValueString(),
-		Description: data.Description.ValueStringPointer(),
-		Cel:         cel,
-		Metadata:    metadata,
-	}
-
-	upsertResp, err := r.workspace.Client.RequestRelationshipRuleUpsertWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.ID.ValueString(),
-		requestBody,
-	)
+	upserted, err := r.workspace.Policy.UpsertRelationshipRule(ctx, connect.NewRequest(&apiv1.UpsertRelationshipRuleRequest{
+		WorkspaceId:        r.workspace.WorkspaceID(),
+		RelationshipRuleId: data.ID.ValueString(),
+		Name:               data.Name.ValueString(),
+		Description:        data.Description.ValueStringPointer(),
+		Reference:          data.Reference.ValueString(),
+		Cel:                cel,
+		Metadata:           metadata,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to update relationship rule", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to update relationship rule", err)
 		return
 	}
 
-	switch upsertResp.StatusCode() {
-	case http.StatusOK, http.StatusAccepted:
-	default:
-		resp.Diagnostics.AddError("Failed to update relationship rule", formatResponseError(upsertResp.StatusCode(), upsertResp.Body))
-		return
+	rule := upserted.Msg
+	if id := rule.GetId(); id != "" {
+		data.ID = types.StringValue(id)
 	}
+	data.Name = types.StringValue(rule.GetName())
+	data.Reference = types.StringValue(rule.GetReference())
+	data.Description = optionalString(rule.GetDescription())
+	data.Cel = types.StringValue(rule.GetCel())
+	data.Metadata = metadataMapValue(rule.GetMetadata())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -283,23 +230,12 @@ func (r *RelationshipRuleResource) Delete(ctx context.Context, req resource.Dele
 		return
 	}
 
-	deleteResp, err := r.workspace.Client.DeleteRelationshipWithResponse(
-		ctx,
-		r.workspace.ID.String(),
-		data.ID.ValueString(),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete relationship rule", err.Error())
-		return
-	}
-
-	switch deleteResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusNotFound:
-		return
-	default:
-		resp.Diagnostics.AddError("Failed to delete relationship rule", formatResponseError(deleteResp.StatusCode(), deleteResp.Body))
+	_, err := r.workspace.Policy.DeleteRelationshipRule(ctx, connect.NewRequest(&apiv1.DeleteRelationshipRuleRequest{
+		WorkspaceId:        r.workspace.WorkspaceID(),
+		RelationshipRuleId: data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete relationship rule", err)
 		return
 	}
 }

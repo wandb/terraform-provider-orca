@@ -5,8 +5,9 @@ package provider
 import (
 	"context"
 	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -17,6 +18,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 var _ resource.Resource = &VariableSetResource{}
@@ -162,53 +164,29 @@ func (r *VariableSetResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	priority := int(data.Priority.ValueInt64())
-	requestBody := api.CreateVariableSetJSONRequestBody{
+	priority := int32(data.Priority.ValueInt64())
+	created, err := r.workspace.VariableSet.CreateVariableSet(ctx, connect.NewRequest(&apiv1.CreateVariableSetRequest{
+		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
-		Description: data.Description.ValueStringPointer(),
 		Selector:    normalizeCEL(data.Selector),
+		Description: data.Description.ValueStringPointer(),
 		Priority:    &priority,
 		Variables:   variables,
-	}
-
-	createResp, err := r.workspace.Client.CreateVariableSetWithResponse(
-		ctx, r.workspace.ID.String(), requestBody,
-	)
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create variable set", err.Error())
+		addConnectError(&resp.Diagnostics, "Failed to create variable set", err)
 		return
 	}
 
-	if createResp.StatusCode() != http.StatusCreated {
-		resp.Diagnostics.AddError("Failed to create variable set", formatResponseError(createResp.StatusCode(), createResp.Body))
+	vs := created.Msg
+	if vs.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to create variable set", "Empty variable set ID in response")
 		return
 	}
 
-	if createResp.JSON201 == nil {
-		resp.Diagnostics.AddError("Failed to create variable set", "Empty response from server")
-		return
-	}
-
-	data.ID = types.StringValue(createResp.JSON201.Id.String())
-
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetVariableSetWithResponse(ctx, r.workspace.ID.String(), createResp.JSON201.Id.String())
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to create variable set", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
-		return
-	}
+	// CreateVariableSet returns a VariableSet without variables. Set the ID and
+	// scalar fields from the response and keep the planned variables in state.
+	data.ID = types.StringValue(vs.GetId())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -220,45 +198,32 @@ func (r *VariableSetResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	getResp, err := r.workspace.Client.GetVariableSetWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
+	got, err := r.workspace.VariableSet.GetVariableSet(ctx, connect.NewRequest(&apiv1.GetVariableSetRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		VariableSetId: data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read variable set", fmt.Sprintf("Failed to read variable set with ID '%s': %s", data.ID.ValueString(), err.Error()))
-		return
-	}
-
-	switch getResp.StatusCode() {
-	case http.StatusOK:
-		if getResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read variable set", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	case http.StatusBadRequest:
-		if getResp.JSON400 != nil && getResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to read variable set", fmt.Sprintf("Bad request: %s", *getResp.JSON400.Error))
-			return
-		}
-		resp.Diagnostics.AddError("Failed to read variable set", "Bad request")
+		addConnectError(&resp.Diagnostics, "Failed to read variable set", err)
 		return
 	}
 
-	if getResp.StatusCode() != http.StatusOK {
-		resp.Diagnostics.AddError("Failed to read variable set", formatResponseError(getResp.StatusCode(), getResp.Body))
+	vs := got.Msg
+	if vs.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read variable set", "Empty response from server")
 		return
 	}
 
-	vs := getResp.JSON200
-	data.ID = types.StringValue(vs.Id.String())
-	data.Name = types.StringValue(vs.Name)
-	data.Description = descriptionValue(&vs.Description)
-	data.Selector = types.StringValue(vs.Selector)
-	data.Priority = types.Int64Value(int64(vs.Priority))
+	data.ID = types.StringValue(vs.GetId())
+	data.Name = types.StringValue(vs.GetName())
+	data.Description = optionalString(vs.GetDescription())
+	data.Selector = types.StringValue(vs.GetSelector())
+	data.Priority = types.Int64Value(int64(vs.GetPriority()))
 
-	varList, diags := vsVariablesToModel(vs.Variables)
+	varList, diags := vsVariablesToModel(vs.GetVariables())
 	resp.Diagnostics.Append(diags...)
 	if resp.Diagnostics.HasError() {
 		return
@@ -282,36 +247,27 @@ func (r *VariableSetResource) Update(ctx context.Context, req resource.UpdateReq
 	}
 
 	name := data.Name.ValueString()
-	priority := int(data.Priority.ValueInt64())
+	priority := int32(data.Priority.ValueInt64())
 	selector := normalizeCEL(data.Selector)
 
-	requestBody := api.UpdateVariableSetJSONRequestBody{
-		Name:        &name,
-		Description: data.Description.ValueStringPointer(),
-		Selector:    &selector,
-		Priority:    &priority,
-		Variables:   &variables,
-	}
-
-	updateResp, err := r.workspace.Client.UpdateVariableSetWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(), requestBody,
-	)
+	updated, err := r.workspace.VariableSet.UpdateVariableSet(ctx, connect.NewRequest(&apiv1.UpdateVariableSetRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		VariableSetId: data.ID.ValueString(),
+		Name:          &name,
+		Description:   data.Description.ValueStringPointer(),
+		Selector:      &selector,
+		Priority:      &priority,
+		Variables:     &apiv1.VariableSetVariableList{Variables: variables},
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to update variable set", fmt.Sprintf("Failed to update variable set with ID '%s': %s", data.ID.ValueString(), err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to update variable set", err)
 		return
 	}
 
-	if updateResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update variable set", formatResponseError(updateResp.StatusCode(), updateResp.Body))
-		return
+	if id := updated.Msg.GetId(); id != "" {
+		data.ID = types.StringValue(id)
 	}
 
-	if updateResp.JSON202 == nil {
-		resp.Diagnostics.AddError("Failed to update variable set", "Empty response from server")
-		return
-	}
-
-	data.ID = types.StringValue(updateResp.JSON202.Id.String())
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -322,38 +278,23 @@ func (r *VariableSetResource) Delete(ctx context.Context, req resource.DeleteReq
 		return
 	}
 
-	deleteResp, err := r.workspace.Client.DeleteVariableSetWithResponse(
-		ctx, r.workspace.ID.String(), data.ID.ValueString(),
-	)
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete variable set", fmt.Sprintf("Failed to delete variable set: %s", err.Error()))
+	_, err := r.workspace.VariableSet.DeleteVariableSet(ctx, connect.NewRequest(&apiv1.DeleteVariableSetRequest{
+		WorkspaceId:   r.workspace.WorkspaceID(),
+		VariableSetId: data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete variable set", err)
 		return
 	}
-
-	switch deleteResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusBadRequest:
-		if deleteResp.JSON400 != nil && deleteResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete variable set", fmt.Sprintf("Bad request: %s", *deleteResp.JSON400.Error))
-			return
-		}
-	case http.StatusNotFound:
-		if deleteResp.JSON404 != nil && deleteResp.JSON404.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete variable set", fmt.Sprintf("Not found: %s", *deleteResp.JSON404.Error))
-			return
-		}
-	}
-
-	resp.Diagnostics.AddError("Failed to delete variable set", formatResponseError(deleteResp.StatusCode(), deleteResp.Body))
 }
 
-// vsVariablesFromModel converts the Terraform list of variables into API VariableSetVariable slice.
-func vsVariablesFromModel(ctx context.Context, data VariableSetResourceModel) ([]api.VariableSetVariable, diag.Diagnostics) {
+// vsVariablesFromModel converts the Terraform list of variables into the proto
+// VariableSetVariableInput slice carried by the Connect API.
+func vsVariablesFromModel(ctx context.Context, data VariableSetResourceModel) ([]*apiv1.VariableSetVariableInput, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	if data.Variables.IsNull() || data.Variables.IsUnknown() {
-		return []api.VariableSetVariable{}, diags
+		return []*apiv1.VariableSetVariableInput{}, diags
 	}
 
 	var models []VariableSetVariableModel
@@ -362,7 +303,7 @@ func vsVariablesFromModel(ctx context.Context, data VariableSetResourceModel) ([
 		return nil, diags
 	}
 
-	variables := make([]api.VariableSetVariable, 0, len(models))
+	variables := make([]*apiv1.VariableSetVariableInput, 0, len(models))
 	for _, m := range models {
 		value, err := vsVariableValueFromModel(m)
 		if err != nil {
@@ -370,19 +311,22 @@ func vsVariablesFromModel(ctx context.Context, data VariableSetResourceModel) ([
 			return nil, diags
 		}
 
-		variables = append(variables, api.VariableSetVariable{
+		variables = append(variables, &apiv1.VariableSetVariableInput{
 			Key:   m.Key.ValueString(),
-			Value: *value,
+			Value: value,
 		})
 	}
 
 	return variables, diags
 }
 
-// vsVariableValueFromModel converts a single variable model into an API Value.
-func vsVariableValueFromModel(m VariableSetVariableModel) (*api.Value, error) {
-	var value api.Value
-
+// vsVariableValueFromModel encodes a single variable model into the *structpb.Value
+// carried by the proto API. The three mutually exclusive forms are encoded so they
+// can be recovered on Read:
+//   - reference_value -> map { "reference": <string>, "path": [<strings>] }
+//   - sensitive value -> map { "sensitive": true }
+//   - literal value   -> the value string, as a structpb string value
+func vsVariableValueFromModel(m VariableSetVariableModel) (*structpb.Value, error) {
 	if !m.ReferenceValue.IsNull() && !m.ReferenceValue.IsUnknown() {
 		refAttrs := m.ReferenceValue.Attributes()
 
@@ -410,39 +354,43 @@ func vsVariableValueFromModel(m VariableSetVariableModel) (*api.Value, error) {
 			return nil, fmt.Errorf("failed to convert reference_value.path to []string")
 		}
 
-		if err := value.FromReferenceValue(api.ReferenceValue{
-			Reference: reference.ValueString(),
-			Path:      pathStrings,
-		}); err != nil {
-			return nil, fmt.Errorf("failed to set reference value: %w", err)
+		pathAny := make([]any, len(pathStrings))
+		for i, p := range pathStrings {
+			pathAny[i] = p
 		}
 
-		return &value, nil
+		refValue, err := structpb.NewValue(map[string]any{
+			"reference": reference.ValueString(),
+			"path":      pathAny,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to build reference value: %w", err)
+		}
+		return refValue, nil
 	}
 
 	if !m.Value.IsNull() && !m.Value.IsUnknown() {
 		if m.Sensitive.ValueBool() {
-			if err := value.FromSensitiveValue(api.SensitiveValue{}); err != nil {
-				return nil, fmt.Errorf("failed to set sensitive value: %w", err)
+			sensValue, err := structpb.NewValue(map[string]any{"sensitive": true})
+			if err != nil {
+				return nil, fmt.Errorf("failed to build sensitive value: %w", err)
 			}
-		} else {
-			var literal api.LiteralValue
-			if err := literal.FromStringValue(m.Value.ValueString()); err != nil {
-				return nil, fmt.Errorf("failed to set string value: %w", err)
-			}
-			if err := value.FromLiteralValue(literal); err != nil {
-				return nil, fmt.Errorf("failed to set literal value: %w", err)
-			}
+			return sensValue, nil
 		}
 
-		return &value, nil
+		litValue, err := structpb.NewValue(m.Value.ValueString())
+		if err != nil {
+			return nil, fmt.Errorf("failed to build literal value: %w", err)
+		}
+		return litValue, nil
 	}
 
 	return nil, fmt.Errorf("one of value or reference_value must be provided")
 }
 
-// vsVariablesToModel converts API variables to a Terraform list for state.
-func vsVariablesToModel(variables []api.VariableSetVariable) (types.List, diag.Diagnostics) {
+// vsVariablesToModel converts proto variables back into a Terraform list for state,
+// inverting the encoding performed by vsVariableValueFromModel.
+func vsVariablesToModel(variables []*apiv1.VariableSetVariable) (types.List, diag.Diagnostics) {
 	var diags diag.Diagnostics
 
 	if len(variables) == 0 {
@@ -455,36 +403,52 @@ func vsVariablesToModel(variables []api.VariableSetVariable) (types.List, diag.D
 		sensitiveVal := types.BoolNull()
 		refVal := types.ObjectNull(referenceValueAttrTypes)
 
-		// Try reference value first
-		if ref, err := v.Value.AsReferenceValue(); err == nil && ref.Reference != "" {
-			pathElements := make([]attr.Value, len(ref.Path))
-			for i, p := range ref.Path {
-				pathElements[i] = types.StringValue(p)
+		decoded := v.GetValue().AsInterface()
+
+		switch d := decoded.(type) {
+		case map[string]any:
+			ref, hasRef := d["reference"]
+			rawPath, hasPath := d["path"]
+			refStr, refIsString := ref.(string)
+			if sens, ok := d["sensitive"].(bool); ok && sens {
+				// Sensitive value marker.
+				sensitiveVal = types.BoolValue(true)
+			} else if hasRef && hasPath && refIsString && refStr != "" {
+				pathSlice, _ := rawPath.([]any)
+				pathElements := make([]attr.Value, len(pathSlice))
+				for i, p := range pathSlice {
+					ps, _ := p.(string)
+					pathElements[i] = types.StringValue(ps)
+				}
+				pathList, listDiags := types.ListValue(types.StringType, pathElements)
+				if listDiags.HasError() {
+					diags.Append(listDiags...)
+					return types.ListNull(types.ObjectType{AttrTypes: variableSetVariableAttrTypes}), diags
+				}
+				obj, objDiags := types.ObjectValue(referenceValueAttrTypes, map[string]attr.Value{
+					"reference": types.StringValue(refStr),
+					"path":      pathList,
+				})
+				if objDiags.HasError() {
+					diags.Append(objDiags...)
+					return types.ListNull(types.ObjectType{AttrTypes: variableSetVariableAttrTypes}), diags
+				}
+				refVal = obj
+			} else {
+				// An unexpected map: render as a literal string for state stability.
+				strVal = types.StringValue(fmt.Sprintf("%v", decoded))
 			}
-			pathList, listDiags := types.ListValue(types.StringType, pathElements)
-			if listDiags.HasError() {
-				diags.Append(listDiags...)
-				return types.ListNull(types.ObjectType{AttrTypes: variableSetVariableAttrTypes}), diags
-			}
-			obj, objDiags := types.ObjectValue(referenceValueAttrTypes, map[string]attr.Value{
-				"reference": types.StringValue(ref.Reference),
-				"path":      pathList,
-			})
-			if objDiags.HasError() {
-				diags.Append(objDiags...)
-				return types.ListNull(types.ObjectType{AttrTypes: variableSetVariableAttrTypes}), diags
-			}
-			refVal = obj
-		} else if _, err := v.Value.AsSensitiveValue(); err == nil {
-			sensitiveVal = types.BoolValue(true)
-		} else if lit, err := v.Value.AsLiteralValue(); err == nil {
-			if s, err := lit.AsStringValue(); err == nil {
-				strVal = types.StringValue(s)
-			}
+		case string:
+			strVal = types.StringValue(d)
+		case nil:
+			// Leave all fields null.
+		default:
+			// Numbers, booleans, etc. were sent as strings; render back to string.
+			strVal = types.StringValue(fmt.Sprintf("%v", d))
 		}
 
 		obj, objDiags := types.ObjectValue(variableSetVariableAttrTypes, map[string]attr.Value{
-			"key":             types.StringValue(v.Key),
+			"key":             types.StringValue(v.GetKey()),
 			"value":           strVal,
 			"sensitive":       sensitiveVal,
 			"reference_value": refVal,

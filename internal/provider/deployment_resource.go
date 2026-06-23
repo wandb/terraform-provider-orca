@@ -6,10 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 
+	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
-	"github.com/gosimple/slug"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
@@ -19,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 var (
@@ -189,60 +190,72 @@ func (r *DeploymentResource) Create(ctx context.Context, req resource.CreateRequ
 		resourceSelector = &cel
 	}
 
-	var jobAgentSelector *string
-	if !data.JobAgentSelector.IsNull() && !data.JobAgentSelector.IsUnknown() {
-		s := data.JobAgentSelector.ValueString()
-		jobAgentSelector = &s
-	}
-
-	requestBody := api.RequestDeploymentCreationJSONRequestBody{
-		Name:             data.Name.ValueString(),
-		Slug:             slug.Make(data.Name.ValueString()),
-		Metadata:         stringMapPointer(data.Metadata),
-		ResourceSelector: resourceSelector,
-		JobAgentSelector: jobAgentSelector,
-		JobAgentConfig:   deploymentJobAgentConfigFromModel(&data),
-	}
-
-	deployResp, err := r.workspace.Client.RequestDeploymentCreationWithResponse(ctx, r.workspace.ID.String(), requestBody)
+	jobAgentConfig, err := deploymentJobAgentConfigStruct(&data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create deployment", err.Error())
 		return
 	}
 
-	if deployResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to create deployment", formatResponseError(deployResp.StatusCode(), deployResp.Body))
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
+
+	created, err := r.workspace.Deployment.CreateDeployment(ctx, connect.NewRequest(&apiv1.CreateDeploymentRequest{
+		WorkspaceId:      r.workspace.WorkspaceID(),
+		Name:             data.Name.ValueString(),
+		ResourceSelector: resourceSelector,
+		JobAgentSelector: data.JobAgentSelector.ValueStringPointer(),
+		JobAgentConfig:   jobAgentConfig,
+		Metadata:         metadata,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to create deployment", err)
 		return
 	}
 
-	if deployResp.JSON202 == nil || deployResp.JSON202.Id == "" {
+	deploymentId := created.Msg.GetId()
+	if deploymentId == "" {
 		resp.Diagnostics.AddError("Failed to create deployment", "Empty deployment ID in response")
 		return
 	}
 
-	deploymentId := deployResp.JSON202.Id
 	data.ID = types.StringValue(deploymentId)
 
-	err = waitForResource(ctx, func() (bool, error) {
-		getResp, err := r.workspace.Client.GetDeploymentWithResponse(ctx, r.workspace.ID.String(), deploymentId)
-		if err != nil {
-			return false, err
-		}
-		switch getResp.StatusCode() {
-		case http.StatusOK:
-			return true, nil
-		case http.StatusNotFound:
-			return false, nil
-		default:
-			return false, fmt.Errorf("unexpected status %d", getResp.StatusCode())
-		}
-	})
+	got, err := r.workspace.Deployment.GetDeployment(ctx, connect.NewRequest(&apiv1.GetDeploymentRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		DeploymentId: deploymentId,
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to create deployment", fmt.Sprintf("Resource not available after creation: %s", err.Error()))
+		addConnectError(&resp.Diagnostics, "Failed to read deployment after create", err)
 		return
 	}
 
+	dep := got.Msg.GetDeployment()
+	if dep == nil || dep.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read deployment after create", "Empty response from server")
+		return
+	}
+
+	r.applyDeployment(&data, dep)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
+}
+
+// applyDeployment hydrates the Terraform model from the authoritative
+// *apiv1.Deployment returned by GetDeployment.
+func (r *DeploymentResource) applyDeployment(data *DeploymentResourceModel, dep *apiv1.Deployment) {
+	data.ID = types.StringValue(dep.GetId())
+	data.Name = types.StringValue(dep.GetName())
+	data.Metadata = metadataMapValue(dep.GetMetadata())
+	data.ResourceSelector = optionalString(dep.GetResourceSelector())
+	data.JobAgentSelector = optionalSelector(dep.GetJobAgentSelector())
+
+	var jobAgentConfig map[string]interface{}
+	if cfg := dep.GetJobAgentConfig(); cfg != nil {
+		jobAgentConfig = cfg.AsMap()
+	}
+	setDeploymentBlocksFromConfig(data, jobAgentConfig)
 }
 
 func (r *DeploymentResource) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -252,53 +265,26 @@ func (r *DeploymentResource) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
-	deployResp, err := r.workspace.Client.GetDeploymentWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
+	got, err := r.workspace.Deployment.GetDeployment(ctx, connect.NewRequest(&apiv1.GetDeploymentRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		DeploymentId: data.ID.ValueString(),
+	}))
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to read deployment", fmt.Sprintf("Failed to read deployment with ID '%s': %s", data.ID.ValueString(), err.Error()))
-		return
-	}
-
-	switch deployResp.StatusCode() {
-	case http.StatusOK:
-		if deployResp.JSON200 == nil {
-			resp.Diagnostics.AddError("Failed to read deployment", "Empty response from server")
+		if isNotFound(err) {
+			resp.State.RemoveResource(ctx)
 			return
 		}
-	case http.StatusNotFound:
-		resp.State.RemoveResource(ctx)
-		return
-	case http.StatusBadRequest:
-		if deployResp.JSON400 != nil && deployResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to read deployment", fmt.Sprintf("Bad request: %s", *deployResp.JSON400.Error))
-			return
-		}
-		resp.Diagnostics.AddError("Failed to read deployment", "Bad request")
+		addConnectError(&resp.Diagnostics, "Failed to read deployment", err)
 		return
 	}
 
-	if deployResp.StatusCode() != http.StatusOK {
-		resp.Diagnostics.AddError("Failed to read deployment", formatResponseError(deployResp.StatusCode(), deployResp.Body))
+	dep := got.Msg.GetDeployment()
+	if dep == nil || dep.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read deployment", "Empty response from server")
 		return
 	}
 
-	dep := deployResp.JSON200.Deployment
-	data.ID = types.StringValue(dep.Id)
-	data.Name = types.StringValue(dep.Name)
-	data.Metadata = stringMapValue(dep.Metadata)
-
-	if dep.ResourceSelector != nil && *dep.ResourceSelector != "" {
-		data.ResourceSelector = types.StringValue(*dep.ResourceSelector)
-	} else {
-		data.ResourceSelector = types.StringNull()
-	}
-
-	if dep.JobAgentSelector != "" {
-		data.JobAgentSelector = types.StringValue(dep.JobAgentSelector)
-	} else {
-		data.JobAgentSelector = types.StringNull()
-	}
-
-	setDeploymentBlocksFromConfig(&data, dep.JobAgentConfig)
+	r.applyDeployment(&data, dep)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -315,38 +301,54 @@ func (r *DeploymentResource) Update(ctx context.Context, req resource.UpdateRequ
 		resourceSelector = &cel
 	}
 
-	var jobAgentSelector *string
-	if !data.JobAgentSelector.IsNull() && !data.JobAgentSelector.IsUnknown() {
-		s := data.JobAgentSelector.ValueString()
-		jobAgentSelector = &s
-	}
-
-	requestBody := api.UpsertDeploymentRequest{
-		Name:             data.Name.ValueString(),
-		Slug:             slug.Make(data.Name.ValueString()),
-		Metadata:         stringMapPointer(data.Metadata),
-		ResourceSelector: resourceSelector,
-		JobAgentSelector: jobAgentSelector,
-		JobAgentConfig:   deploymentJobAgentConfigFromModel(&data),
-	}
-
-	deployResp, err := r.workspace.Client.RequestDeploymentUpsertWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString(), requestBody)
+	jobAgentConfig, err := deploymentJobAgentConfigStruct(&data)
 	if err != nil {
-		resp.Diagnostics.AddError("Failed to update deployment", fmt.Sprintf("Failed to update deployment with ID '%s': %s", data.ID.ValueString(), err.Error()))
+		resp.Diagnostics.AddError("Failed to update deployment", err.Error())
 		return
 	}
 
-	if deployResp.StatusCode() != http.StatusAccepted {
-		resp.Diagnostics.AddError("Failed to update deployment", formatResponseError(deployResp.StatusCode(), deployResp.Body))
+	var metadata map[string]string
+	if p := stringMapPointer(data.Metadata); p != nil {
+		metadata = *p
+	}
+
+	upserted, err := r.workspace.Deployment.UpsertDeployment(ctx, connect.NewRequest(&apiv1.UpsertDeploymentRequest{
+		WorkspaceId:      r.workspace.WorkspaceID(),
+		DeploymentId:     data.ID.ValueString(),
+		Name:             data.Name.ValueString(),
+		ResourceSelector: resourceSelector,
+		JobAgentSelector: data.JobAgentSelector.ValueStringPointer(),
+		JobAgentConfig:   jobAgentConfig,
+		Metadata:         metadata,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to update deployment", err)
 		return
 	}
 
-	if deployResp.JSON202 == nil || deployResp.JSON202.Id == "" {
-		resp.Diagnostics.AddError("Failed to update deployment", "Empty deployment ID in response")
+	deploymentId := data.ID.ValueString()
+	if id := upserted.Msg.GetId(); id != "" {
+		deploymentId = id
+		data.ID = types.StringValue(id)
+	}
+
+	got, err := r.workspace.Deployment.GetDeployment(ctx, connect.NewRequest(&apiv1.GetDeploymentRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		DeploymentId: deploymentId,
+	}))
+	if err != nil {
+		addConnectError(&resp.Diagnostics, "Failed to read deployment after update", err)
 		return
 	}
 
-	data.ID = types.StringValue(deployResp.JSON202.Id)
+	dep := got.Msg.GetDeployment()
+	if dep == nil || dep.GetId() == "" {
+		resp.Diagnostics.AddError("Failed to read deployment after update", "Empty response from server")
+		return
+	}
+
+	r.applyDeployment(&data, dep)
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -357,28 +359,14 @@ func (r *DeploymentResource) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 
-	clientResp, err := r.workspace.Client.RequestDeploymentDeletionWithResponse(ctx, r.workspace.ID.String(), data.ID.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError("Failed to delete deployment", fmt.Sprintf("Failed to delete deployment: %s", err.Error()))
+	_, err := r.workspace.Deployment.DeleteDeployment(ctx, connect.NewRequest(&apiv1.DeleteDeploymentRequest{
+		WorkspaceId:  r.workspace.WorkspaceID(),
+		DeploymentId: data.ID.ValueString(),
+	}))
+	if err != nil && !isNotFound(err) {
+		addConnectError(&resp.Diagnostics, "Failed to delete deployment", err)
 		return
 	}
-
-	switch clientResp.StatusCode() {
-	case http.StatusAccepted, http.StatusNoContent:
-		return
-	case http.StatusBadRequest:
-		if clientResp.JSON400 != nil && clientResp.JSON400.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete deployment", fmt.Sprintf("Bad request: %s", *clientResp.JSON400.Error))
-			return
-		}
-	case http.StatusNotFound:
-		if clientResp.JSON404 != nil && clientResp.JSON404.Error != nil {
-			resp.Diagnostics.AddError("Failed to delete deployment", fmt.Sprintf("Not found: %s", *clientResp.JSON404.Error))
-			return
-		}
-	}
-
-	resp.Diagnostics.AddError("Failed to delete deployment", formatResponseError(clientResp.StatusCode(), clientResp.Body))
 }
 
 type DeploymentResourceModel struct {
@@ -430,6 +418,17 @@ type DeploymentTestRunnerModel struct {
 	DelaySeconds types.Int64  `tfsdk:"delay_seconds"`
 	Message      types.String `tfsdk:"message"`
 	Status       types.String `tfsdk:"status"`
+}
+
+// deploymentJobAgentConfigStruct extracts the typed block into a
+// *structpb.Struct suitable for the proto JobAgentConfig field. A nil result
+// (no block set or empty config) maps to an absent config.
+func deploymentJobAgentConfigStruct(data *DeploymentResourceModel) (*structpb.Struct, error) {
+	cfg := deploymentJobAgentConfigFromModel(data)
+	if cfg == nil {
+		return nil, nil
+	}
+	return structpb.NewStruct(*cfg)
 }
 
 // deploymentJobAgentConfigFromModel extracts the typed block into a
