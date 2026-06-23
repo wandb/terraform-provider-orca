@@ -287,7 +287,7 @@ func (r *JobAgentResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	created, err := r.workspace.Job.UpsertJobAgent(ctx, connect.NewRequest(&apiv1.UpsertJobAgentRequest{
+	created, err := r.workspace.Job.CreateJobAgent(ctx, connect.NewRequest(&apiv1.CreateJobAgentRequest{
 		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
 		Type:        jobAgentType,
@@ -298,24 +298,13 @@ func (r *JobAgentResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	agentId := created.Msg.GetId()
-	if agentId == "" {
+	jobAgent := created.Msg.GetJobAgent()
+	if jobAgent.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to create job agent", "Empty job agent ID in response")
 		return
 	}
 
-	data.ID = types.StringValue(agentId)
-
-	got, err := r.workspace.Job.GetJobAgent(ctx, connect.NewRequest(&apiv1.GetJobAgentRequest{
-		WorkspaceId: r.workspace.WorkspaceID(),
-		JobAgentId:  agentId,
-	}))
-	if err != nil {
-		addConnectError(&resp.Diagnostics, "Failed to read job agent after create", err)
-		return
-	}
-
-	applyJobAgent(&data, got.Msg)
+	applyJobAgent(&data, jobAgent)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
