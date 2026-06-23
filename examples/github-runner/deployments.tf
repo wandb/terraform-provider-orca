@@ -4,7 +4,8 @@ resource "ctrlplane_deployment" "this" {
   job_agent_selector = "jobAgent.id == \"${ctrlplane_job_agent.this.id}\""
 
   github {
-    workflow_id = 106983480
+    repo        = "orca-gh-get-job-inputs-test"
+    workflow_id = 301102333
   }
 }
 
