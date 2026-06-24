@@ -177,6 +177,14 @@ func (r *JobAgentResource) Schema(ctx context.Context, req resource.SchemaReques
 							Required:    true,
 							Description: "GitHub repository name",
 						},
+						"workflow_id": schema.Int64Attribute{
+							Optional:    true,
+							Description: "GitHub Actions workflow ID to dispatch. Required when this agent is dispatched by a ctrlplane_workflow.",
+						},
+						"ref": schema.StringAttribute{
+							Optional:    true,
+							Description: "Git ref (branch/tag/SHA) to run the workflow on.",
+						},
 					},
 				},
 			},
@@ -488,6 +496,8 @@ type JobAgentGitHubModel struct {
 	InstallationId types.Int64  `tfsdk:"installation_id"`
 	Owner          types.String `tfsdk:"owner"`
 	Repo           types.String `tfsdk:"repo"`
+	WorkflowId     types.Int64  `tfsdk:"workflow_id"`
+	Ref            types.String `tfsdk:"ref"`
 }
 
 type JobAgentTFCModel struct {
@@ -576,6 +586,12 @@ func jobAgentConfigFromModel(data JobAgentResourceModel) (string, *map[string]in
 			"owner":          github.Owner.ValueString(),
 			"repo":           github.Repo.ValueString(),
 		}
+		if !github.WorkflowId.IsNull() && !github.WorkflowId.IsUnknown() {
+			cfg["workflowId"] = github.WorkflowId.ValueInt64()
+		}
+		if !github.Ref.IsNull() && !github.Ref.IsUnknown() && github.Ref.ValueString() != "" {
+			cfg["ref"] = github.Ref.ValueString()
+		}
 		return "github-app", &cfg, nil
 	case len(data.TerraformCloud) > 0:
 		tfc := data.TerraformCloud[0]
@@ -651,6 +667,14 @@ func setJobAgentBlocksFromAPI(data *JobAgentResourceModel, jobType string, confi
 			InstallationId: types.Int64Value(toInt64(config["installationId"])),
 			Owner:          types.StringValue(fmt.Sprint(config["owner"])),
 			Repo:           types.StringValue(fmt.Sprint(config["repo"])),
+			WorkflowId:     types.Int64Null(),
+			Ref:            types.StringNull(),
+		}
+		if v, ok := config["workflowId"]; ok && v != nil {
+			github.WorkflowId = types.Int64Value(toInt64(v))
+		}
+		if v, ok := config["ref"]; ok && v != nil && fmt.Sprint(v) != "" {
+			github.Ref = types.StringValue(fmt.Sprint(v))
 		}
 		data.GitHub = []JobAgentGitHubModel{github}
 	case "tfe":

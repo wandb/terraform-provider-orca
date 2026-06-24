@@ -1,0 +1,29 @@
+variable "workspace" {
+  type        = string
+  description = "The workspace to use"
+}
+
+variable "url" {
+  type        = string
+  description = "The URL of the Ctrlplane API"
+}
+
+variable "api_key" {
+  type        = string
+  description = "The API key for the Ctrlplane API"
+  sensitive   = true
+}
+
+variable "argo_api_key" {
+  type        = string
+  description = "API token for the Argo Workflows server"
+  sensitive   = true
+  default     = ""
+}
+
+variable "argo_webhook_secret" {
+  type        = string
+  description = "Argo Events webhook secret"
+  sensitive   = true
+  default     = ""
+}
