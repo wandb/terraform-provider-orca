@@ -78,6 +78,11 @@ Required:
 - `owner` (String) GitHub repository owner
 - `repo` (String) GitHub repository name
 
+Optional:
+
+- `ref` (String) Git ref (branch/tag/SHA) to run the workflow on.
+- `workflow_id` (Number) GitHub Actions workflow ID to dispatch. Required when this agent is dispatched by a ctrlplane_workflow.
+
 
 <a id="nestedblock--http_pull"></a>
 ### Nested Schema for `http_pull`
