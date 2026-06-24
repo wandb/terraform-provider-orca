@@ -1,8 +1,8 @@
 terraform {
   required_providers {
     ctrlplane = {
-      source  = "ctrlplanedev/ctrlplane"
-      version = ">= 1.10.1"
+      source  = "wandb/orca"
+      version = ">= 1.0.2"
     }
   }
 }
