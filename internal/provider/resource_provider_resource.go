@@ -73,6 +73,9 @@ func (r *ResourceProviderResource) Schema(ctx context.Context, req resource.Sche
 			"name": schema.StringAttribute{
 				Required:    true,
 				Description: "The name of the resource provider",
+				PlanModifiers: []planmodifier.String{
+					stringplanmodifier.RequiresReplace(),
+				},
 			},
 			"metadata": schema.MapAttribute{
 				Optional:    true,
@@ -137,6 +140,7 @@ func (r *ResourceProviderResource) Create(ctx context.Context, req resource.Crea
 	upserted, err := r.workspace.Resource.UpsertResourceProvider(ctx, connect.NewRequest(&apiv1.UpsertResourceProviderRequest{
 		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
+		Metadata:    resourceMetadataFromMap(data.Metadata),
 	}))
 	if err != nil {
 		addConnectError(&resp.Diagnostics, "Failed to create resource provider", err)
@@ -227,11 +231,10 @@ func (r *ResourceProviderResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	data.ID = state.ID
-
 	upserted, err := r.workspace.Resource.UpsertResourceProvider(ctx, connect.NewRequest(&apiv1.UpsertResourceProviderRequest{
 		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
+		Metadata:    resourceMetadataFromMap(data.Metadata),
 	}))
 	if err != nil {
 		addConnectError(&resp.Diagnostics, "Failed to update resource provider", err)

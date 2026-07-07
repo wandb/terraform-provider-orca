@@ -10,6 +10,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
@@ -258,6 +259,85 @@ resource "ctrlplane_resource_provider" "test_empty" {
     identifier = %q
     kind       = "test/resource"
     version    = "v1"
+  }
+}
+`, testAccProviderConfig(), name, name+"-res", name+"-res")
+}
+
+func TestAccResourceProviderResource_idempotent(t *testing.T) {
+	name := fmt.Sprintf("tf-acc-rp-idem-%d", time.Now().UnixNano())
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceProviderConfig_twoResources(name),
+			},
+			{
+				Config: testAccResourceProviderConfig_twoResources(name),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
+
+func TestAccResourceProviderResource_configRoundTrip(t *testing.T) {
+	name := fmt.Sprintf("tf-acc-rp-cfg-%d", time.Now().UnixNano())
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceProviderConfig_withConfig(name),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"ctrlplane_resource_provider.test_cfg",
+						tfjsonpath.New("resource").AtSliceIndex(0).AtMapKey("config"),
+						knownvalue.NotNull(),
+					),
+				},
+			},
+			{
+				Config: testAccResourceProviderConfig_withConfig(name),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
+
+// testAccResourceProviderConfig_withConfig creates a provider with one resource carrying a JSON config.
+func testAccResourceProviderConfig_withConfig(name string) string {
+	return fmt.Sprintf(`
+%s
+resource "ctrlplane_resource_provider" "test_cfg" {
+  name = %q
+
+  resource {
+    name       = %q
+    identifier = %q
+    kind       = "test/resource"
+    version    = "v1"
+    config = jsonencode({
+      replicas = 3
+      ratio    = 0.5
+      enabled  = true
+      region   = "us-east-1"
+      tags     = ["a", "b", "c"]
+      nested = {
+        cpu    = 2
+        memory = "4Gi"
+      }
+    })
   }
 }
 `, testAccProviderConfig(), name, name+"-res", name+"-res")

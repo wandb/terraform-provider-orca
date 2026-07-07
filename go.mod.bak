@@ -74,5 +74,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
 )
-
-replace buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go => /private/tmp/claude-502/-Users-adityachoudhari-Documents-ctrlplane/102f73da-60c2-44c5-9545-cc79fb3992ce/scratchpad/bsr-pb
