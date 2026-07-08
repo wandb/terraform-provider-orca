@@ -22,7 +22,7 @@ Manages a deployment variable value override in Ctrlplane. A variable value prov
 
 ### Optional
 
-- `literal_value` (Dynamic) A literal value (string, number, boolean, or object). Conflicts with `reference_value`.
+- `literal_value` (Dynamic) A literal value (string, number, boolean, or object). Conflicts with `reference_value`. Numbers are transmitted as double-precision floats, so integers larger than 2^53 lose precision — pass such values as strings.
 - `reference_value` (Attributes) A reference value pointing to a property on the matched resource. Conflicts with `literal_value`. (see [below for nested schema](#nestedatt--reference_value))
 - `resource_selector` (String) A CEL expression to select which resources this value applies to.
 
