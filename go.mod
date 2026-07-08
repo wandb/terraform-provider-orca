@@ -3,8 +3,8 @@ module github.com/ctrlplanedev/terraform-provider-ctrlplane
 go 1.26.4
 
 require (
-	buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260623201158-3e96d61669ac.1
-	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260623201158-3e96d61669ac.1
+	buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260708134836-ca5068fc1310.1
+	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260708134836-ca5068fc1310.1
 	connectrpc.com/connect v1.20.0
 	github.com/google/cel-go v0.28.1
 	github.com/google/uuid v1.6.0
@@ -74,5 +74,3 @@ require (
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
 )
-
-replace buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go => /private/tmp/claude-502/-Users-adityachoudhari-Documents-ctrlplane/102f73da-60c2-44c5-9545-cc79fb3992ce/scratchpad/bsr-pb
