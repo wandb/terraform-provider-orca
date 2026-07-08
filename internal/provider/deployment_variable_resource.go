@@ -88,7 +88,7 @@ func (r *DeploymentVariableResource) Create(ctx context.Context, req resource.Cr
 		return
 	}
 
-	created, err := r.workspace.Deployment.UpsertDeploymentVariable(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableRequest{
+	created, err := r.workspace.Deployment.CreateDeploymentVariable(ctx, connect.NewRequest(&apiv1.CreateDeploymentVariableRequest{
 		WorkspaceId:  r.workspace.WorkspaceID(),
 		DeploymentId: data.DeploymentId.ValueString(),
 		Key:          data.Key.ValueString(),
@@ -99,24 +99,7 @@ func (r *DeploymentVariableResource) Create(ctx context.Context, req resource.Cr
 		return
 	}
 
-	variableID := created.Msg.GetId()
-	if variableID == "" {
-		resp.Diagnostics.AddError("Failed to create deployment variable", "Empty deployment variable ID in response")
-		return
-	}
-
-	data.ID = types.StringValue(variableID)
-
-	got, err := r.workspace.Deployment.GetDeploymentVariable(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableRequest{
-		WorkspaceId: r.workspace.WorkspaceID(),
-		VariableId:  variableID,
-	}))
-	if err != nil {
-		addConnectError(&resp.Diagnostics, "Failed to read deployment variable after create", err)
-		return
-	}
-
-	applyDeploymentVariable(&data, got.Msg.GetVariable())
+	applyDeploymentVariable(&data, created.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -166,7 +149,7 @@ func (r *DeploymentVariableResource) Update(ctx context.Context, req resource.Up
 		return
 	}
 
-	upserted, err := r.workspace.Deployment.UpsertDeploymentVariable(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableRequest{
+	updated, err := r.workspace.Deployment.UpdateDeploymentVariable(ctx, connect.NewRequest(&apiv1.UpdateDeploymentVariableRequest{
 		WorkspaceId:  r.workspace.WorkspaceID(),
 		VariableId:   data.ID.ValueString(),
 		DeploymentId: data.DeploymentId.ValueString(),
@@ -178,20 +161,7 @@ func (r *DeploymentVariableResource) Update(ctx context.Context, req resource.Up
 		return
 	}
 
-	if id := upserted.Msg.GetId(); id != "" {
-		data.ID = types.StringValue(id)
-	}
-
-	got, err := r.workspace.Deployment.GetDeploymentVariable(ctx, connect.NewRequest(&apiv1.GetDeploymentVariableRequest{
-		WorkspaceId: r.workspace.WorkspaceID(),
-		VariableId:  data.ID.ValueString(),
-	}))
-	if err != nil {
-		addConnectError(&resp.Diagnostics, "Failed to read deployment variable after update", err)
-		return
-	}
-
-	applyDeploymentVariable(&data, got.Msg.GetVariable())
+	applyDeploymentVariable(&data, updated.Msg)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }

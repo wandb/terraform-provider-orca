@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
@@ -110,6 +111,75 @@ func TestAccDeploymentVariableValueResource_reference(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestAccDeploymentVariableValueResource_literalTypes(t *testing.T) {
+	cases := []struct {
+		name    string
+		literal string
+	}{
+		{"int", "100"},
+		{"float", "3.14"},
+		{"whole_float", "3.0"},
+		{"negative", "-42"},
+		{"zero", "0"},
+		{"bool", "true"},
+		{"string", `"hello"`},
+		{"numeric_string", `"100"`},
+		{"object", `{ replicas = 3, region = "us-east", enabled = true }`},
+		{"nested_object", `{ limits = { cpu = 2, memory = 4 }, replicas = 3 }`},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			name := fmt.Sprintf("tf-acc-varval-%s-%d", tc.name, time.Now().UnixNano())
+			resource.Test(t, resource.TestCase{
+				PreCheck:                 func() { testAccPreCheck(t) },
+				ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+				Steps: []resource.TestStep{
+					{
+						Config: testAccDeploymentVariableValueConfigRawLiteral(name, tc.literal),
+					},
+					{
+						Config: testAccDeploymentVariableValueConfigRawLiteral(name, tc.literal),
+						ConfigPlanChecks: resource.ConfigPlanChecks{
+							PreApply: []plancheck.PlanCheck{
+								plancheck.ExpectEmptyPlan(),
+							},
+						},
+					},
+				},
+			})
+		})
+	}
+}
+
+// testAccDeploymentVariableValueConfigRawLiteral injects a raw (unquoted) HCL
+// expression as literal_value so callers can exercise non-string types.
+func testAccDeploymentVariableValueConfigRawLiteral(name, literalExpr string) string {
+	return fmt.Sprintf(`
+%s
+resource "ctrlplane_system" "test" {
+  name = %q
+}
+
+resource "ctrlplane_deployment" "test" {
+  name              = %q
+  resource_selector = "resource.name == '%s'"
+}
+
+resource "ctrlplane_deployment_variable" "test" {
+  deployment_id = ctrlplane_deployment.test.id
+  key           = %q
+  description   = "Terraform acceptance test variable"
+}
+
+resource "ctrlplane_deployment_variable_value" "test" {
+  variable_id   = ctrlplane_deployment_variable.test.id
+  priority      = 100
+  literal_value = %s
+}
+`, testAccProviderConfig(), name, name+"-deployment", name, name, literalExpr)
 }
 
 // testAccDeploymentVariableValueResourceConfigLiteral builds the dependency
