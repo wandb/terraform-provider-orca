@@ -6,7 +6,7 @@ require (
 	buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260708160625-b7705c9af3ed.1
 	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260708160625-b7705c9af3ed.1
 	connectrpc.com/connect v1.20.0
-	github.com/google/cel-go v0.28.1
+	github.com/google/cel-go v0.29.2
 	github.com/google/uuid v1.6.0
 	github.com/gosimple/slug v1.15.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
