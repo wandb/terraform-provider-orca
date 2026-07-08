@@ -101,7 +101,7 @@ func (r *DeploymentVariableValueResource) Schema(ctx context.Context, req resour
 			},
 			"literal_value": schema.DynamicAttribute{
 				Optional:            true,
-				MarkdownDescription: "A literal value (string, number, boolean, or object). Conflicts with `reference_value`.",
+				MarkdownDescription: "A literal value (string, number, boolean, or object). Conflicts with `reference_value`. Numbers are transmitted as double-precision floats, so integers larger than 2^53 lose precision — pass such values as strings.",
 			},
 			"reference_value": schema.SingleNestedAttribute{
 				Optional:            true,
