@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-testing/helper/resource"
 	"github.com/hashicorp/terraform-plugin-testing/knownvalue"
+	"github.com/hashicorp/terraform-plugin-testing/plancheck"
 	"github.com/hashicorp/terraform-plugin-testing/statecheck"
 	"github.com/hashicorp/terraform-plugin-testing/tfjsonpath"
 )
@@ -99,6 +100,75 @@ func TestAccResourceResource(t *testing.T) {
 			},
 		},
 	})
+}
+
+func TestAccResourceResource_idempotent(t *testing.T) {
+	identifier := fmt.Sprintf("tf-acc-res-idem-%d", time.Now().UnixNano())
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceResourceConfig(identifier, identifier+"-name", "1.0.0", "infra"),
+			},
+			{
+				Config: testAccResourceResourceConfig(identifier, identifier+"-name", "1.0.0", "infra"),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
+
+func TestAccResourceResource_configTypes(t *testing.T) {
+	identifier := fmt.Sprintf("tf-acc-res-cfg-%d", time.Now().UnixNano())
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccResourceResourceConfigRich(identifier),
+			},
+			{
+				Config: testAccResourceResourceConfigRich(identifier),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{
+						plancheck.ExpectEmptyPlan(),
+					},
+				},
+			},
+		},
+	})
+}
+
+// testAccResourceResourceConfigRich exercises the Dynamic config round-trip with
+// mixed scalar types and a nested object.
+func testAccResourceResourceConfigRich(identifier string) string {
+	return fmt.Sprintf(`
+%s
+resource "ctrlplane_resource" "test" {
+  identifier = %q
+  name       = %q
+  version    = "1.0.0"
+  kind       = "kubernetes/pod"
+
+  config = {
+    replicas = 3
+    ratio    = 0.5
+    enabled  = true
+    region   = "us-east-1"
+    nested = {
+      cpu    = 2
+      memory = "4Gi"
+    }
+  }
+}
+`, testAccProviderConfig(), identifier, identifier+"-name")
 }
 
 func testAccResourceResourceConfig(identifier, name, version, team string) string {
