@@ -165,6 +165,7 @@ Optional:
 
 - `datadog` (Block, Optional) Datadog metric provider configuration (see [below for nested schema](#nestedblock--verification--metric--datadog))
 - `failure` (Block, Optional) Failure condition (see [below for nested schema](#nestedblock--verification--metric--failure))
+- `prometheus` (Block, Optional) Prometheus metric provider configuration (see [below for nested schema](#nestedblock--verification--metric--prometheus))
 - `sleep` (Block, Optional) Sleep metric provider configuration (see [below for nested schema](#nestedblock--verification--metric--sleep))
 - `success` (Block, Optional) Success condition (see [below for nested schema](#nestedblock--verification--metric--success))
 
@@ -189,6 +190,50 @@ Optional:
 
 - `condition` (String) CEL expression to evaluate failure
 - `threshold` (Number) Consecutive failures before failing
+
+
+<a id="nestedblock--verification--metric--prometheus"></a>
+### Nested Schema for `verification.metric.prometheus`
+
+Optional:
+
+- `address` (String) Prometheus server address (supports Go templates)
+- `authentication` (Block, Optional) Authentication configuration for Prometheus (see [below for nested schema](#nestedblock--verification--metric--prometheus--authentication))
+- `headers` (Map of String) Additional HTTP headers (values support Go templates)
+- `insecure` (Boolean) Skip TLS certificate verification
+- `query` (String) PromQL query (supports Go templates)
+- `range_query` (Block, Optional) Range query configuration (uses /api/v1/query_range instead of an instant query) (see [below for nested schema](#nestedblock--verification--metric--prometheus--range_query))
+- `timeout` (Number) Query timeout in seconds
+
+<a id="nestedblock--verification--metric--prometheus--authentication"></a>
+### Nested Schema for `verification.metric.prometheus.authentication`
+
+Optional:
+
+- `bearer_token` (String, Sensitive) Bearer token (supports Go templates)
+- `oauth2` (Block, Optional) OAuth2 client-credentials configuration (see [below for nested schema](#nestedblock--verification--metric--prometheus--authentication--oauth2))
+
+<a id="nestedblock--verification--metric--prometheus--authentication--oauth2"></a>
+### Nested Schema for `verification.metric.prometheus.authentication.oauth2`
+
+Optional:
+
+- `client_id` (String) OAuth2 client ID (supports Go templates)
+- `client_secret` (String, Sensitive) OAuth2 client secret (supports Go templates)
+- `scopes` (List of String) OAuth2 scopes
+- `token_url` (String) OAuth2 token URL (supports Go templates)
+
+
+
+<a id="nestedblock--verification--metric--prometheus--range_query"></a>
+### Nested Schema for `verification.metric.prometheus.range_query`
+
+Optional:
+
+- `end` (String) How far back from now for the query end, as a Prometheus duration (e.g., "0s" for now)
+- `start` (String) How far back from now to start the query, as a Prometheus duration (e.g., "5m")
+- `step` (String) Query resolution step (e.g., "30s")
+
 
 
 <a id="nestedblock--verification--metric--sleep"></a>
