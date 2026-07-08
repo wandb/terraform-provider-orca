@@ -25,6 +25,18 @@ func TestPolicyVerificationMetricRoundTrip(t *testing.T) {
 		t.Fatalf("build queries map: %v", d)
 	}
 
+	headers, d := types.MapValue(types.StringType, map[string]attr.Value{
+		"X-Scope-OrgID": types.StringValue("tenant-a"),
+	})
+	if d.HasError() {
+		t.Fatalf("build headers map: %v", d)
+	}
+
+	scopes, d := types.ListValue(types.StringType, []attr.Value{types.StringValue("read")})
+	if d.HasError() {
+		t.Fatalf("build scopes list: %v", d)
+	}
+
 	cases := []struct {
 		name string
 		in   PolicyVerificationMetric
@@ -55,6 +67,36 @@ func TestPolicyVerificationMetricRoundTrip(t *testing.T) {
 					AppKey:     types.StringValue("app"),
 					Aggregator: types.StringNull(),
 					Formula:    types.StringNull(),
+				},
+			},
+		},
+		{
+			name: "prometheus",
+			in: PolicyVerificationMetric{
+				Name:     types.StringValue("error_rate"),
+				Interval: types.StringValue("30s"),
+				Count:    types.Int64Value(4),
+				Success:  &PolicyVerificationCondition{Condition: types.StringValue("result < 0.01"), Threshold: types.Int64Null()},
+				Prometheus: &PolicyPrometheusProvider{
+					Address:  types.StringValue("http://prometheus:9090"),
+					Query:    types.StringValue("rate(errors[5m])"),
+					Timeout:  types.Int64Value(30),
+					Insecure: types.BoolValue(true),
+					Headers:  headers,
+					Authentication: &PolicyPrometheusAuthentication{
+						BearerToken: types.StringValue("tok"),
+						OAuth2: &PolicyPrometheusOAuth2{
+							TokenURL:     types.StringValue("https://auth.example.com/token"),
+							ClientID:     types.StringValue("cid"),
+							ClientSecret: types.StringValue("secret"),
+							Scopes:       scopes,
+						},
+					},
+					RangeQuery: &PolicyPrometheusRangeQuery{
+						Start: types.StringValue("5m"),
+						End:   types.StringValue("0s"),
+						Step:  types.StringValue("30s"),
+					},
 				},
 			},
 		},

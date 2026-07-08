@@ -347,6 +347,86 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 											},
 										},
 									},
+									"prometheus": schema.SingleNestedBlock{
+										Description: "Prometheus metric provider configuration",
+										Attributes: map[string]schema.Attribute{
+											"address": schema.StringAttribute{
+												Optional:    true,
+												Description: "Prometheus server address (supports Go templates)",
+											},
+											"query": schema.StringAttribute{
+												Optional:    true,
+												Description: "PromQL query (supports Go templates)",
+											},
+											"timeout": schema.Int64Attribute{
+												Optional:    true,
+												Description: "Query timeout in seconds",
+											},
+											"insecure": schema.BoolAttribute{
+												Optional:    true,
+												Description: "Skip TLS certificate verification",
+											},
+											"headers": schema.MapAttribute{
+												Optional:    true,
+												Description: "Additional HTTP headers (values support Go templates)",
+												ElementType: types.StringType,
+											},
+										},
+										Blocks: map[string]schema.Block{
+											"authentication": schema.SingleNestedBlock{
+												Description: "Authentication configuration for Prometheus",
+												Attributes: map[string]schema.Attribute{
+													"bearer_token": schema.StringAttribute{
+														Optional:    true,
+														Description: "Bearer token (supports Go templates)",
+														Sensitive:   true,
+													},
+												},
+												Blocks: map[string]schema.Block{
+													"oauth2": schema.SingleNestedBlock{
+														Description: "OAuth2 client-credentials configuration",
+														Attributes: map[string]schema.Attribute{
+															"token_url": schema.StringAttribute{
+																Optional:    true,
+																Description: "OAuth2 token URL (supports Go templates)",
+															},
+															"client_id": schema.StringAttribute{
+																Optional:    true,
+																Description: "OAuth2 client ID (supports Go templates)",
+															},
+															"client_secret": schema.StringAttribute{
+																Optional:    true,
+																Description: "OAuth2 client secret (supports Go templates)",
+																Sensitive:   true,
+															},
+															"scopes": schema.ListAttribute{
+																Optional:    true,
+																Description: "OAuth2 scopes",
+																ElementType: types.StringType,
+															},
+														},
+													},
+												},
+											},
+											"range_query": schema.SingleNestedBlock{
+												Description: "Range query configuration (uses /api/v1/query_range instead of an instant query)",
+												Attributes: map[string]schema.Attribute{
+													"start": schema.StringAttribute{
+														Optional:    true,
+														Description: "How far back from now to start the query, as a Prometheus duration (e.g., \"5m\")",
+													},
+													"end": schema.StringAttribute{
+														Optional:    true,
+														Description: "How far back from now for the query end, as a Prometheus duration (e.g., \"0s\" for now)",
+													},
+													"step": schema.StringAttribute{
+														Optional:    true,
+														Description: "Query resolution step (e.g., \"30s\")",
+													},
+												},
+											},
+										},
+									},
 								},
 							},
 						},
@@ -785,13 +865,14 @@ type PolicyPlanValidationOpa struct {
 }
 
 type PolicyVerificationMetric struct {
-	Name     types.String                 `tfsdk:"name"`
-	Interval types.String                 `tfsdk:"interval"`
-	Count    types.Int64                  `tfsdk:"count"`
-	Success  *PolicyVerificationCondition `tfsdk:"success"`
-	Failure  *PolicyVerificationCondition `tfsdk:"failure"`
-	Sleep    *PolicySleepProvider         `tfsdk:"sleep"`
-	Datadog  *PolicyDatadogProvider       `tfsdk:"datadog"`
+	Name       types.String                 `tfsdk:"name"`
+	Interval   types.String                 `tfsdk:"interval"`
+	Count      types.Int64                  `tfsdk:"count"`
+	Success    *PolicyVerificationCondition `tfsdk:"success"`
+	Failure    *PolicyVerificationCondition `tfsdk:"failure"`
+	Sleep      *PolicySleepProvider         `tfsdk:"sleep"`
+	Datadog    *PolicyDatadogProvider       `tfsdk:"datadog"`
+	Prometheus *PolicyPrometheusProvider    `tfsdk:"prometheus"`
 }
 
 type PolicySleepProvider struct {
@@ -811,6 +892,34 @@ type PolicyDatadogProvider struct {
 	AppKey     types.String `tfsdk:"app_key"`
 	Aggregator types.String `tfsdk:"aggregator"`
 	Formula    types.String `tfsdk:"formula"`
+}
+
+type PolicyPrometheusProvider struct {
+	Address        types.String                    `tfsdk:"address"`
+	Query          types.String                    `tfsdk:"query"`
+	Timeout        types.Int64                     `tfsdk:"timeout"`
+	Insecure       types.Bool                      `tfsdk:"insecure"`
+	Headers        types.Map                       `tfsdk:"headers"`
+	Authentication *PolicyPrometheusAuthentication `tfsdk:"authentication"`
+	RangeQuery     *PolicyPrometheusRangeQuery     `tfsdk:"range_query"`
+}
+
+type PolicyPrometheusAuthentication struct {
+	BearerToken types.String            `tfsdk:"bearer_token"`
+	OAuth2      *PolicyPrometheusOAuth2 `tfsdk:"oauth2"`
+}
+
+type PolicyPrometheusOAuth2 struct {
+	TokenURL     types.String `tfsdk:"token_url"`
+	ClientID     types.String `tfsdk:"client_id"`
+	ClientSecret types.String `tfsdk:"client_secret"`
+	Scopes       types.List   `tfsdk:"scopes"`
+}
+
+type PolicyPrometheusRangeQuery struct {
+	Start types.String `tfsdk:"start"`
+	End   types.String `tfsdk:"end"`
+	Step  types.String `tfsdk:"step"`
 }
 
 type policyRulesModel struct {
@@ -1070,11 +1179,15 @@ func policyVerificationMetricStruct(model PolicyVerificationMetric) (*structpb.S
 
 	hasSleep := model.Sleep != nil
 	hasDatadog := model.Datadog != nil
-	if !hasSleep && !hasDatadog {
-		return nil, fmt.Errorf("exactly one of sleep or datadog provider block is required")
+	hasPrometheus := model.Prometheus != nil
+	providerCount := 0
+	for _, set := range []bool{hasSleep, hasDatadog, hasPrometheus} {
+		if set {
+			providerCount++
+		}
 	}
-	if hasSleep && hasDatadog {
-		return nil, fmt.Errorf("only one of sleep or datadog provider block can be set")
+	if providerCount != 1 {
+		return nil, fmt.Errorf("exactly one of sleep, datadog, or prometheus provider block is required")
 	}
 
 	intervalSeconds, err := parseDurationSeconds(model.Interval)
@@ -1093,10 +1206,13 @@ func policyVerificationMetricStruct(model PolicyVerificationMetric) (*structpb.S
 	}
 
 	var provider map[string]any
-	if hasSleep {
+	switch {
+	case hasSleep:
 		provider, err = policySleepProviderMap(*model.Sleep)
-	} else {
+	case hasDatadog:
 		provider, err = policyDatadogProviderMap(*model.Datadog)
+	case hasPrometheus:
+		provider, err = policyPrometheusProviderMap(*model.Prometheus)
 	}
 	if err != nil {
 		return nil, err
@@ -1181,6 +1297,125 @@ func policyDatadogProviderMap(model PolicyDatadogProvider) (map[string]any, erro
 	}
 
 	return provider, nil
+}
+
+// policyPrometheusProviderMap encodes the prometheus provider block as the JSON
+// object the engine's prometheus.Config expects (camelCase keys, headers as a
+// list of {key,value} objects).
+func policyPrometheusProviderMap(model PolicyPrometheusProvider) (map[string]any, error) {
+	if !selectorValueSet(model.Address) {
+		return nil, fmt.Errorf("prometheus address is required")
+	}
+	if !selectorValueSet(model.Query) {
+		return nil, fmt.Errorf("prometheus query is required")
+	}
+
+	provider := map[string]any{
+		"type":    "prometheus",
+		"address": model.Address.ValueString(),
+		"query":   model.Query.ValueString(),
+	}
+
+	if int64ValueSet(model.Timeout) {
+		provider["timeout"] = float64(model.Timeout.ValueInt64())
+	}
+	if !model.Insecure.IsNull() && !model.Insecure.IsUnknown() {
+		provider["insecure"] = model.Insecure.ValueBool()
+	}
+
+	if !model.Headers.IsNull() && !model.Headers.IsUnknown() {
+		headers, err := mapStringValue(model.Headers)
+		if err != nil {
+			return nil, fmt.Errorf("invalid prometheus headers: %w", err)
+		}
+		headerList := make([]any, 0, len(headers))
+		for k, v := range headers {
+			headerList = append(headerList, map[string]any{"key": k, "value": v})
+		}
+		provider["headers"] = headerList
+	}
+
+	if model.Authentication != nil {
+		authentication, err := policyPrometheusAuthMap(*model.Authentication)
+		if err != nil {
+			return nil, err
+		}
+		provider["authentication"] = authentication
+	}
+
+	if model.RangeQuery != nil {
+		rangeQuery, err := policyPrometheusRangeQueryMap(*model.RangeQuery)
+		if err != nil {
+			return nil, err
+		}
+		provider["rangeQuery"] = rangeQuery
+	}
+
+	return provider, nil
+}
+
+func policyPrometheusAuthMap(model PolicyPrometheusAuthentication) (map[string]any, error) {
+	authentication := map[string]any{}
+	if selectorValueSet(model.BearerToken) {
+		authentication["bearerToken"] = model.BearerToken.ValueString()
+	}
+	if model.OAuth2 != nil {
+		oauth2, err := policyPrometheusOAuth2Map(*model.OAuth2)
+		if err != nil {
+			return nil, err
+		}
+		authentication["oauth2"] = oauth2
+	}
+	if len(authentication) == 0 {
+		return nil, fmt.Errorf("prometheus authentication block requires bearer_token or oauth2")
+	}
+	return authentication, nil
+}
+
+func policyPrometheusOAuth2Map(model PolicyPrometheusOAuth2) (map[string]any, error) {
+	if !selectorValueSet(model.TokenURL) {
+		return nil, fmt.Errorf("prometheus oauth2 token_url is required")
+	}
+	if !selectorValueSet(model.ClientID) {
+		return nil, fmt.Errorf("prometheus oauth2 client_id is required")
+	}
+	if !selectorValueSet(model.ClientSecret) {
+		return nil, fmt.Errorf("prometheus oauth2 client_secret is required")
+	}
+
+	oauth2 := map[string]any{
+		"tokenUrl":     model.TokenURL.ValueString(),
+		"clientId":     model.ClientID.ValueString(),
+		"clientSecret": model.ClientSecret.ValueString(),
+	}
+	if !model.Scopes.IsNull() && !model.Scopes.IsUnknown() {
+		scopes, err := listStringValue(model.Scopes)
+		if err != nil {
+			return nil, fmt.Errorf("invalid prometheus oauth2 scopes: %w", err)
+		}
+		scopesAny := make([]any, len(scopes))
+		for i, s := range scopes {
+			scopesAny[i] = s
+		}
+		oauth2["scopes"] = scopesAny
+	}
+	return oauth2, nil
+}
+
+func policyPrometheusRangeQueryMap(model PolicyPrometheusRangeQuery) (map[string]any, error) {
+	if !selectorValueSet(model.Step) {
+		return nil, fmt.Errorf("prometheus range_query step is required")
+	}
+	rangeQuery := map[string]any{
+		"step": model.Step.ValueString(),
+	}
+	if selectorValueSet(model.Start) {
+		rangeQuery["start"] = model.Start.ValueString()
+	}
+	if selectorValueSet(model.End) {
+		rangeQuery["end"] = model.End.ValueString()
+	}
+	return rangeQuery, nil
 }
 
 // policyRulesToModel maps the proto PolicyRule list back into the Terraform
@@ -1680,6 +1915,9 @@ func policyVerificationMetricToModel(metric *structpb.Struct) (PolicyVerificatio
 			DurationSeconds: types.Int64Value(structInt(provider, "durationSeconds")),
 		}
 		return model, nil
+	case "prometheus":
+		model.Prometheus = policyPrometheusProviderToModel(provider)
+		return model, nil
 	case "datadog":
 	default:
 		return PolicyVerificationMetric{}, fmt.Errorf("unsupported metric provider type: %q", providerType)
@@ -1719,6 +1957,96 @@ func policyVerificationMetricToModel(metric *structpb.Struct) (PolicyVerificatio
 	model.Datadog = datadog
 
 	return model, nil
+}
+
+// policyPrometheusProviderToModel decodes a prometheus provider struct (as
+// produced by policyPrometheusProviderMap) back into the Terraform model.
+func policyPrometheusProviderToModel(provider map[string]any) *PolicyPrometheusProvider {
+	model := &PolicyPrometheusProvider{
+		Address:        types.StringValue(structString(provider, "address")),
+		Query:          types.StringValue(structString(provider, "query")),
+		Timeout:        types.Int64Null(),
+		Insecure:       types.BoolNull(),
+		Headers:        types.MapNull(types.StringType),
+		Authentication: nil,
+		RangeQuery:     nil,
+	}
+
+	if _, ok := provider["timeout"]; ok {
+		model.Timeout = types.Int64Value(structInt(provider, "timeout"))
+	}
+	if v, ok := provider["insecure"].(bool); ok {
+		model.Insecure = types.BoolValue(v)
+	}
+	if list, ok := provider["headers"].([]any); ok && len(list) > 0 {
+		headers := make(map[string]string, len(list))
+		for _, h := range list {
+			header, ok := h.(map[string]any)
+			if !ok {
+				continue
+			}
+			headers[structString(header, "key")] = structString(header, "value")
+		}
+		result, _ := types.MapValueFrom(context.Background(), types.StringType, headers)
+		model.Headers = result
+	}
+	if auth, ok := provider["authentication"].(map[string]any); ok {
+		model.Authentication = policyPrometheusAuthToModel(auth)
+	}
+	if rangeQuery, ok := provider["rangeQuery"].(map[string]any); ok {
+		model.RangeQuery = policyPrometheusRangeQueryToModel(rangeQuery)
+	}
+
+	return model
+}
+
+func policyPrometheusAuthToModel(auth map[string]any) *PolicyPrometheusAuthentication {
+	model := &PolicyPrometheusAuthentication{
+		BearerToken: types.StringNull(),
+		OAuth2:      nil,
+	}
+	if _, ok := auth["bearerToken"]; ok {
+		model.BearerToken = types.StringValue(structString(auth, "bearerToken"))
+	}
+	if oauth2, ok := auth["oauth2"].(map[string]any); ok {
+		model.OAuth2 = policyPrometheusOAuth2ToModel(oauth2)
+	}
+	return model
+}
+
+func policyPrometheusOAuth2ToModel(oauth2 map[string]any) *PolicyPrometheusOAuth2 {
+	model := &PolicyPrometheusOAuth2{
+		TokenURL:     types.StringValue(structString(oauth2, "tokenUrl")),
+		ClientID:     types.StringValue(structString(oauth2, "clientId")),
+		ClientSecret: types.StringValue(structString(oauth2, "clientSecret")),
+		Scopes:       types.ListNull(types.StringType),
+	}
+	if list, ok := oauth2["scopes"].([]any); ok && len(list) > 0 {
+		scopes := make([]string, 0, len(list))
+		for _, s := range list {
+			if str, ok := s.(string); ok {
+				scopes = append(scopes, str)
+			}
+		}
+		result, _ := types.ListValueFrom(context.Background(), types.StringType, scopes)
+		model.Scopes = result
+	}
+	return model
+}
+
+func policyPrometheusRangeQueryToModel(rangeQuery map[string]any) *PolicyPrometheusRangeQuery {
+	model := &PolicyPrometheusRangeQuery{
+		Start: types.StringNull(),
+		End:   types.StringNull(),
+		Step:  types.StringValue(structString(rangeQuery, "step")),
+	}
+	if _, ok := rangeQuery["start"]; ok {
+		model.Start = types.StringValue(structString(rangeQuery, "start"))
+	}
+	if _, ok := rangeQuery["end"]; ok {
+		model.End = types.StringValue(structString(rangeQuery, "end"))
+	}
+	return model
 }
 
 // structString reads a string value from a decoded structpb map.
@@ -1764,6 +2092,18 @@ func mapStringValue(value types.Map) (map[string]string, error) {
 	diags := value.ElementsAs(context.Background(), &decoded, false)
 	if diags.HasError() {
 		return nil, fmt.Errorf("invalid map value")
+	}
+	return decoded, nil
+}
+
+func listStringValue(value types.List) ([]string, error) {
+	if value.IsNull() || value.IsUnknown() {
+		return nil, fmt.Errorf("list must be set")
+	}
+	var decoded []string
+	diags := value.ElementsAs(context.Background(), &decoded, false)
+	if diags.HasError() {
+		return nil, fmt.Errorf("invalid list value")
 	}
 	return decoded, nil
 }
