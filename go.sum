@@ -1,7 +1,7 @@
-buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260708160625-b7705c9af3ed.1 h1:ON3WEDzoEH+DUl10XvIEQMUhy7eD/7Mw6kFx8gxRC+Q=
-buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260708160625-b7705c9af3ed.1/go.mod h1:reF8aD99TV1jlO4afQs9wxMSQ3IhB40tkCzC/JKylqE=
-buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260708160625-b7705c9af3ed.1 h1:lMdlytjIh08j8A4eL7IOwyPJ8YNEc9KhnX7ln7XNU28=
-buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260708160625-b7705c9af3ed.1/go.mod h1:d5bg3j7hBDma4EiUSwJdnyqioItD2HbKJ5Z5zzIWQno=
+buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260708210533-99d8a8db1037.1 h1:oEuOLL8nWyp68DgHbQQB24vBxmsaUtw4ZufZcGqLMnQ=
+buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260708210533-99d8a8db1037.1/go.mod h1:XAmT0+SZQ3oAPmkK3BPdUkBd/j+WiJ54Ew7TjSS5CnM=
+buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260708210533-99d8a8db1037.1 h1:gK1PRhWhIwyGx3JRlleSP17XWzkE3m0uvp+4n6rgSlg=
+buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260708210533-99d8a8db1037.1/go.mod h1:d5bg3j7hBDma4EiUSwJdnyqioItD2HbKJ5Z5zzIWQno=
 cel.dev/expr v0.25.1 h1:1KrZg61W6TWSxuNZ37Xy49ps13NUovb66QLprthtwi4=
 cel.dev/expr v0.25.1/go.mod h1:hrXvqGP6G6gyx8UAHSHJ5RGk//1Oj5nXQ2NI02Nrsg4=
 connectrpc.com/connect v1.20.0 h1:6TNDAB+WeNd2uolWNlYczB5E0KNNaVMNUEx8JEUsPmQ=
