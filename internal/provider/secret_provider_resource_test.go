@@ -21,7 +21,7 @@ func TestAccSecretProviderResource(t *testing.T) {
 		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
 		Steps: []resource.TestStep{
 			{
-				Config: testAccSecretProviderResourceConfig(name, "aws-secrets-manager", `{"region":"us-east-1"}`),
+				Config: testAccSecretProviderResourceConfig(name, "aws-secrets-manager", `{"region":"us-east-1"}`, 1),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"ctrlplane_secret_provider.test",
@@ -38,42 +38,65 @@ func TestAccSecretProviderResource(t *testing.T) {
 						tfjsonpath.New("type"),
 						knownvalue.StringExact("aws-secrets-manager"),
 					),
+					statecheck.ExpectKnownValue(
+						"ctrlplane_secret_provider.test",
+						tfjsonpath.New("config_wo"),
+						knownvalue.Null(),
+					),
+					statecheck.ExpectKnownValue(
+						"ctrlplane_secret_provider.test",
+						tfjsonpath.New("config_wo_version"),
+						knownvalue.Int64Exact(1),
+					),
 				},
 			},
-			// Gap: async/no-drift refresh right after create.
 			{
 				RefreshState: true,
+				Check:        resource.TestCheckNoResourceAttr("ctrlplane_secret_provider.test", "config_wo"),
 			},
-			// Update the config and type.
 			{
-				Config: testAccSecretProviderResourceConfig(name, "doppler", `{"project":"tf-acc"}`),
+				Config:   testAccSecretProviderResourceConfig(name, "aws-secrets-manager", `{"region":"us-east-1"}`, 1),
+				PlanOnly: true,
+			},
+			{
+				Config: testAccSecretProviderResourceConfig(name, "aws-secrets-manager", `{"region":"us-west-2"}`, 2),
 				ConfigStateChecks: []statecheck.StateCheck{
 					statecheck.ExpectKnownValue(
 						"ctrlplane_secret_provider.test",
 						tfjsonpath.New("type"),
-						knownvalue.StringExact("doppler"),
+						knownvalue.StringExact("aws-secrets-manager"),
+					),
+					statecheck.ExpectKnownValue(
+						"ctrlplane_secret_provider.test",
+						tfjsonpath.New("config_wo"),
+						knownvalue.Null(),
+					),
+					statecheck.ExpectKnownValue(
+						"ctrlplane_secret_provider.test",
+						tfjsonpath.New("config_wo_version"),
+						knownvalue.Int64Exact(2),
 					),
 				},
 			},
-			// Import by name; config is write-only and cannot be recovered, so it is ignored on verify.
 			{
 				ResourceName:            "ctrlplane_secret_provider.test",
 				ImportState:             true,
 				ImportStateId:           name,
 				ImportStateVerify:       true,
-				ImportStateVerifyIgnore: []string{"config"},
+				ImportStateVerifyIgnore: []string{"config_wo_version"},
 			},
 		},
 	})
 }
 
-func testAccSecretProviderResourceConfig(name, providerType, config string) string {
+func testAccSecretProviderResourceConfig(name, providerType, config string, configVersion int64) string {
 	return fmt.Sprintf(`
 %s
 resource "ctrlplane_secret_provider" "test" {
-  name   = %q
-  type   = %q
-  config = %q
+  name              = %q
+  type              = %q
+  config_wo         = %q
+  config_wo_version = %d
 }
-`, testAccProviderConfig(), name, providerType, config)
+`, testAccProviderConfig(), name, providerType, config, configVersion)
 }
