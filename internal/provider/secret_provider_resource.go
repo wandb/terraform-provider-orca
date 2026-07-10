@@ -9,11 +9,14 @@ import (
 	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
+	providervalidator "github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/validator"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	schemavalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
@@ -29,23 +32,18 @@ type SecretProviderResource struct {
 	workspace *api.WorkspaceClient
 }
 
-// SecretProviderResourceModel describes a secret provider. Config is write-only:
-// the API never returns it, so its value is sourced from configuration and
-// preserved across reads rather than refreshed from the server.
 type SecretProviderResourceModel struct {
-	ID     types.String `tfsdk:"id"`
-	Name   types.String `tfsdk:"name"`
-	Type   types.String `tfsdk:"type"`
-	Config types.String `tfsdk:"config"`
+	ID              types.String `tfsdk:"id"`
+	Name            types.String `tfsdk:"name"`
+	Type            types.String `tfsdk:"type"`
+	ConfigWO        types.String `tfsdk:"config_wo"`
+	ConfigWOVersion types.Int64  `tfsdk:"config_wo_version"`
 }
 
 func (r *SecretProviderResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
 	resp.TypeName = req.ProviderTypeName + "_secret_provider"
 }
 
-// ImportState imports by name, since the read path looks the provider up by
-// name. The write-only config cannot be recovered on import and will be null
-// until the next apply sets it.
 func (r *SecretProviderResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
 	resource.ImportStatePassthroughID(ctx, path.Root("name"), req, resp)
 }
@@ -81,10 +79,20 @@ func (r *SecretProviderResource) Schema(ctx context.Context, req resource.Schema
 				Required:    true,
 				Description: "The type of the secret provider. Supported values: `google-secrets-manager`, `doppler`, `aws-secrets-manager`.",
 			},
-			"config": schema.StringAttribute{
-				Optional:    true,
+			"config_wo": schema.StringAttribute{
+				Required:    true,
 				Sensitive:   true,
-				Description: "Provider-specific configuration, serialized as a JSON string. Write-only: the API never returns it, so its value is taken from configuration.",
+				WriteOnly:   true,
+				Description: "Provider-specific configuration serialized as JSON. Terraform does not store this value in plan or state artifacts. After importing a secret provider, configure this attribute because the API cannot return it.",
+				Validators: []schemavalidator.String{
+					providervalidator.NewJSONValidator(),
+				},
+			},
+			"config_wo_version": schema.Int64Attribute{
+				Optional:    true,
+				Computed:    true,
+				Default:     int64default.StaticInt64(1),
+				Description: "Version of the write-only provider configuration. Increment this value to apply rotated credentials. This value is not recovered during import.",
 			},
 		},
 	}
@@ -97,11 +105,17 @@ func (r *SecretProviderResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
+	var config types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config_wo"), &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	created, err := r.workspace.SecretProvider.CreateSecretProvider(ctx, connect.NewRequest(&apiv1.CreateSecretProviderRequest{
 		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
 		Type:        data.Type.ValueString(),
-		Config:      data.Config.ValueString(),
+		Config:      config.ValueString(),
 	}))
 	if err != nil {
 		addConnectError(&resp.Diagnostics, "Failed to create secret provider", err)
@@ -112,7 +126,6 @@ func (r *SecretProviderResource) Create(ctx context.Context, req resource.Create
 	data.ID = types.StringValue(provider.GetId())
 	data.Name = types.StringValue(provider.GetName())
 	data.Type = types.StringValue(provider.GetType())
-	// Config is write-only; keep the planned value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -141,7 +154,6 @@ func (r *SecretProviderResource) Read(ctx context.Context, req resource.ReadRequ
 	data.ID = types.StringValue(provider.GetId())
 	data.Name = types.StringValue(provider.GetName())
 	data.Type = types.StringValue(provider.GetType())
-	// Config is write-only and not returned by the API; leave the state value untouched.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
@@ -155,6 +167,12 @@ func (r *SecretProviderResource) Update(ctx context.Context, req resource.Update
 		return
 	}
 
+	var config types.String
+	resp.Diagnostics.Append(req.Config.GetAttribute(ctx, path.Root("config_wo"), &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	data.ID = state.ID
 
 	updated, err := r.workspace.SecretProvider.UpdateSecretProvider(ctx, connect.NewRequest(&apiv1.UpdateSecretProviderRequest{
@@ -162,7 +180,7 @@ func (r *SecretProviderResource) Update(ctx context.Context, req resource.Update
 		Id:          data.ID.ValueString(),
 		Name:        data.Name.ValueString(),
 		Type:        data.Type.ValueString(),
-		Config:      data.Config.ValueString(),
+		Config:      config.ValueString(),
 	}))
 	if err != nil {
 		addConnectError(&resp.Diagnostics, "Failed to update secret provider", err)
@@ -175,7 +193,6 @@ func (r *SecretProviderResource) Update(ctx context.Context, req resource.Update
 	}
 	data.Name = types.StringValue(provider.GetName())
 	data.Type = types.StringValue(provider.GetType())
-	// Config is write-only; keep the planned value.
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }

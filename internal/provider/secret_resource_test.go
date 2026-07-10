@@ -79,9 +79,10 @@ func testAccSecretResourceConfig(name, key, version string) string {
 	return fmt.Sprintf(`
 %s
 resource "ctrlplane_secret_provider" "test" {
-  name   = "%s-provider"
-  type   = "aws-secrets-manager"
-  config = %q
+  name              = "%s-provider"
+  type              = "aws-secrets-manager"
+  config_wo         = %q
+  config_wo_version = 1
 }
 
 resource "ctrlplane_secret" "test" {

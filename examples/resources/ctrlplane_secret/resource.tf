@@ -1,9 +1,10 @@
 resource "ctrlplane_secret_provider" "aws" {
   name = "aws-prod"
   type = "aws-secrets-manager"
-  config = jsonencode({
+  config_wo = jsonencode({
     region = "us-east-1"
   })
+  config_wo_version = 1
 }
 
 resource "ctrlplane_secret" "db_password" {

@@ -13,12 +13,20 @@ Manages a secret provider in Ctrlplane. A secret provider connects Ctrlplane to 
 ## Example Usage
 
 ```terraform
-resource "ctrlplane_secret_provider" "aws" {
-  name = "aws-prod"
-  type = "aws-secrets-manager"
-  config = jsonencode({
-    region = "us-east-1"
-  })
+variable "doppler_config" {
+  type        = string
+  description = "Doppler secret-provider configuration serialized as JSON"
+  sensitive   = true
+  ephemeral   = true
+}
+
+# Prefer a read-only Service Token scoped to one Doppler config. Use a
+# Service Account Token only when broader project access is required.
+resource "ctrlplane_secret_provider" "doppler" {
+  name              = "doppler-production"
+  type              = "doppler"
+  config_wo         = var.doppler_config
+  config_wo_version = 1
 }
 ```
 
@@ -27,12 +35,15 @@ resource "ctrlplane_secret_provider" "aws" {
 
 ### Required
 
+> **NOTE**: [Write-only arguments](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments) are supported in Terraform 1.11 and later.
+
+- `config_wo` (String, Sensitive, [Write-only](https://developer.hashicorp.com/terraform/language/resources/ephemeral#write-only-arguments)) Provider-specific configuration serialized as JSON. Terraform does not store this value in plan or state artifacts. After importing a secret provider, configure this attribute because the API cannot return it.
 - `name` (String) The name of the secret provider (unique within the workspace)
 - `type` (String) The type of the secret provider. Supported values: `google-secrets-manager`, `doppler`, `aws-secrets-manager`.
 
 ### Optional
 
-- `config` (String, Sensitive) Provider-specific configuration, serialized as a JSON string. Write-only: the API never returns it, so its value is taken from configuration.
+- `config_wo_version` (Number) Version of the write-only provider configuration. Increment this value to apply rotated credentials. This value is not recovered during import.
 
 ### Read-Only
 
