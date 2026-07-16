@@ -38,13 +38,6 @@ func stringMapValue(value *map[string]string) types.Map {
 	return result
 }
 
-func normalizeCEL(value types.String) string {
-	if value.IsNull() || value.IsUnknown() {
-		return ""
-	}
-	return strings.Join(strings.Fields(value.ValueString()), " ")
-}
-
 // celCanonical parses a CEL selector and re-emits it in cel-go's canonical
 // form, collapsing the author's parenthesization to a single deterministic
 // shape. Returns ("", false) when the string does not parse.

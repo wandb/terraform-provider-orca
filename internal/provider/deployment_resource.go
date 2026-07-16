@@ -185,10 +185,7 @@ func (r *DeploymentResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	var resourceSelector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		resourceSelector = &cel
-	}
+	resourceSelector := optionalStringPtr(data.ResourceSelector)
 
 	jobAgentConfig, err := deploymentJobAgentConfigStruct(&data)
 	if err != nil {
@@ -296,10 +293,7 @@ func (r *DeploymentResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	var resourceSelector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		resourceSelector = &cel
-	}
+	resourceSelector := optionalStringPtr(data.ResourceSelector)
 
 	jobAgentConfig, err := deploymentJobAgentConfigStruct(&data)
 	if err != nil {

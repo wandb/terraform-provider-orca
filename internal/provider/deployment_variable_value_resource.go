@@ -170,10 +170,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := optionalStringPtr(data.ResourceSelector)
 
 	created, err := r.workspace.Deployment.UpsertDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableValueRequest{
 		WorkspaceId:          r.workspace.WorkspaceID(),
@@ -276,10 +273,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := optionalStringPtr(data.ResourceSelector)
 
 	upserted, err := r.workspace.Deployment.UpsertDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableValueRequest{
 		WorkspaceId:          r.workspace.WorkspaceID(),

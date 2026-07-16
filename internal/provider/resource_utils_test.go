@@ -2,7 +2,11 @@
 
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/types"
+)
 
 func TestCelEquivalent(t *testing.T) {
 	tests := []struct {
@@ -59,5 +63,25 @@ func TestCelEquivalent(t *testing.T) {
 				t.Errorf("celEquivalent(%q, %q) = %v, want %v", tt.state, tt.plan, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPolicyRulesFromModelPreservesCELText(t *testing.T) {
+	versionSelector := "version.tag == \"two  spaces\"\n && version.name == 'api'"
+	environmentSelector := "environment.name == 'qa'\n || environment.name == 'staging'"
+	rules, diags := policyRulesFromModel(PolicyResourceModel{
+		VersionSelector: []PolicyVersionSelector{{Selector: types.StringValue(versionSelector)}},
+		EnvironmentProgression: []PolicyEnvironmentProgression{
+			{DependsOnEnvironmentSelector: types.StringValue(environmentSelector)},
+		},
+	})
+	if diags.HasError() {
+		t.Fatalf("policyRulesFromModel() diagnostics: %v", diags)
+	}
+	if got := rules[0].GetVersionSelector().GetSelector(); got != versionSelector {
+		t.Fatalf("version selector = %q, want %q", got, versionSelector)
+	}
+	if got := rules[1].GetEnvironmentProgression().GetDependsOnEnvironmentSelector(); got != environmentSelector {
+		t.Fatalf("environment selector = %q, want %q", got, environmentSelector)
 	}
 }

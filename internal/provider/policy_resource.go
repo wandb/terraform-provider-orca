@@ -997,7 +997,7 @@ func policyRulesFromModel(data PolicyResourceModel) ([]*apiv1.PolicyRule, diag.D
 	rules := make([]*apiv1.PolicyRule, 0)
 
 	for _, vs := range data.VersionSelector {
-		cel := normalizeCEL(vs.Selector)
+		cel := vs.Selector.ValueString()
 		if cel == "" {
 			diags.AddError("Invalid version selector", "selector must be set")
 			continue
@@ -1091,7 +1091,7 @@ func policyRulesFromModel(data PolicyResourceModel) ([]*apiv1.PolicyRule, diag.D
 	}
 
 	for _, progression := range data.EnvironmentProgression {
-		cel := normalizeCEL(progression.DependsOnEnvironmentSelector)
+		cel := progression.DependsOnEnvironmentSelector.ValueString()
 		if cel == "" {
 			diags.AddError("Invalid environment progression selector", "depends_on_environment_selector must be set")
 			continue

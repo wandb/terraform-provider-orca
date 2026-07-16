@@ -168,7 +168,7 @@ func (r *VariableSetResource) Create(ctx context.Context, req resource.CreateReq
 	created, err := r.workspace.VariableSet.CreateVariableSet(ctx, connect.NewRequest(&apiv1.CreateVariableSetRequest{
 		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
-		Selector:    normalizeCEL(data.Selector),
+		Selector:    data.Selector.ValueString(),
 		Description: data.Description.ValueStringPointer(),
 		Priority:    &priority,
 		Variables:   variables,
@@ -248,7 +248,7 @@ func (r *VariableSetResource) Update(ctx context.Context, req resource.UpdateReq
 
 	name := data.Name.ValueString()
 	priority := int32(data.Priority.ValueInt64())
-	selector := normalizeCEL(data.Selector)
+	selector := data.Selector.ValueString()
 
 	updated, err := r.workspace.VariableSet.UpdateVariableSet(ctx, connect.NewRequest(&apiv1.UpdateVariableSetRequest{
 		WorkspaceId:   r.workspace.WorkspaceID(),

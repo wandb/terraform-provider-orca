@@ -58,10 +58,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := optionalStringPtr(data.ResourceSelector)
 
 	var metadata map[string]string
 	if p := stringMapPointer(data.Metadata); p != nil {
@@ -215,10 +212,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := optionalStringPtr(data.ResourceSelector)
 
 	var metadata map[string]string
 	if p := stringMapPointer(data.Metadata); p != nil {

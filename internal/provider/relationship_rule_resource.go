@@ -115,7 +115,7 @@ func (r *RelationshipRuleResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	cel := normalizeCEL(data.Cel)
+	cel := data.Cel.ValueString()
 
 	var metadata map[string]string
 	if p := stringMapPointer(data.Metadata); p != nil {
@@ -189,7 +189,7 @@ func (r *RelationshipRuleResource) Update(ctx context.Context, req resource.Upda
 
 	data.ID = state.ID
 
-	cel := normalizeCEL(data.Cel)
+	cel := data.Cel.ValueString()
 
 	var metadata map[string]string
 	if p := stringMapPointer(data.Metadata); p != nil {
