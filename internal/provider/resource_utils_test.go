@@ -61,3 +61,23 @@ func TestCelEquivalent(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyRulesFromModelPreservesCELText(t *testing.T) {
+	versionSelector := "version.tag == \"two  spaces\"\n && version.name == 'api'"
+	environmentSelector := "environment.name == 'qa'\n || environment.name == 'staging'"
+	rules, diags := policyRulesFromModel(PolicyResourceModel{
+		VersionSelector: []PolicyVersionSelector{{Selector: celStringValue(versionSelector)}},
+		EnvironmentProgression: []PolicyEnvironmentProgression{
+			{DependsOnEnvironmentSelector: celStringValue(environmentSelector)},
+		},
+	})
+	if diags.HasError() {
+		t.Fatalf("policyRulesFromModel() diagnostics: %v", diags)
+	}
+	if got := rules[0].GetVersionSelector().GetSelector(); got != versionSelector {
+		t.Fatalf("version selector = %q, want %q", got, versionSelector)
+	}
+	if got := rules[1].GetEnvironmentProgression().GetDependsOnEnvironmentSelector(); got != environmentSelector {
+		t.Fatalf("environment selector = %q, want %q", got, environmentSelector)
+	}
+}

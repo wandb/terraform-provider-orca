@@ -58,10 +58,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := celStringPointer(data.ResourceSelector)
 
 	var metadata map[string]string
 	if p := stringMapPointer(data.Metadata); p != nil {
@@ -164,7 +161,7 @@ func applyEnvironment(data *EnvironmentResourceModel, env *apiv1.Environment) {
 	data.Name = types.StringValue(env.GetName())
 	data.Description = optionalString(env.GetDescription())
 	data.Metadata = metadataMapValue(env.GetMetadata())
-	data.ResourceSelector = optionalString(env.GetResourceSelector())
+	data.ResourceSelector = optionalCELStringValue(env.GetResourceSelector())
 }
 
 // Schema implements resource.Resource.
@@ -187,6 +184,7 @@ func (r *EnvironmentResource) Schema(ctx context.Context, req resource.SchemaReq
 				Description: "The description of the environment",
 			},
 			"resource_selector": schema.StringAttribute{
+				CustomType:  CELStringType{},
 				Optional:    true,
 				Description: "CEL expression used to select resources",
 				PlanModifiers: []planmodifier.String{
@@ -215,10 +213,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := celStringPointer(data.ResourceSelector)
 
 	var metadata map[string]string
 	if p := stringMapPointer(data.Metadata); p != nil {
@@ -263,9 +258,9 @@ func (r *EnvironmentResource) Metadata(ctx context.Context, req resource.Metadat
 }
 
 type EnvironmentResourceModel struct {
-	ID               types.String `tfsdk:"id"`
-	Name             types.String `tfsdk:"name"`
-	ResourceSelector types.String `tfsdk:"resource_selector"`
-	Description      types.String `tfsdk:"description"`
-	Metadata         types.Map    `tfsdk:"metadata"`
+	ID               types.String   `tfsdk:"id"`
+	Name             types.String   `tfsdk:"name"`
+	ResourceSelector CELStringValue `tfsdk:"resource_selector"`
+	Description      types.String   `tfsdk:"description"`
+	Metadata         types.Map      `tfsdk:"metadata"`
 }
