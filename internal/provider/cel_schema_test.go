@@ -35,10 +35,18 @@ func TestCELBackedSchemaAndModelCoverage(t *testing.T) {
 
 	var policyResp resource.SchemaResponse
 	(&PolicyResource{}).Schema(context.Background(), resource.SchemaRequest{}, &policyResp)
-	versionBlock := policyResp.Schema.Blocks["version_selector"].(schema.ListNestedBlock)
+	versionBlockValue := policyResp.Schema.Blocks["version_selector"]
+	versionBlock, ok := versionBlockValue.(schema.ListNestedBlock)
+	if !ok {
+		t.Fatalf("version_selector block = %T, want schema.ListNestedBlock", versionBlockValue)
+	}
 	requireCELStringAttribute(t, versionBlock.NestedObject.Attributes["selector"])
 	requireCELStringModelField(t, PolicyVersionSelector{}, "Selector")
-	progressionBlock := policyResp.Schema.Blocks["environment_progression"].(schema.ListNestedBlock)
+	progressionBlockValue := policyResp.Schema.Blocks["environment_progression"]
+	progressionBlock, ok := progressionBlockValue.(schema.ListNestedBlock)
+	if !ok {
+		t.Fatalf("environment_progression block = %T, want schema.ListNestedBlock", progressionBlockValue)
+	}
 	requireCELStringAttribute(t, progressionBlock.NestedObject.Attributes["depends_on_environment_selector"])
 	requireCELStringModelField(t, PolicyEnvironmentProgression{}, "DependsOnEnvironmentSelector")
 }

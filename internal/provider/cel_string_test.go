@@ -45,8 +45,15 @@ func TestCELStringTypeValueConversion(t *testing.T) {
 		t.Fatalf("ValueFromTerraform() = %#v (%T)", value, value)
 	}
 	nullValue, err := typ.ValueFromTerraform(context.Background(), tftypes.NewValue(tftypes.String, nil))
-	if err != nil || !nullValue.(CELStringValue).IsNull() {
-		t.Fatalf("null ValueFromTerraform() = %#v, %v", nullValue, err)
+	if err != nil {
+		t.Fatalf("null ValueFromTerraform() error: %v", err)
+	}
+	nullCELValue, ok := nullValue.(CELStringValue)
+	if !ok {
+		t.Fatalf("null ValueFromTerraform() = %T, want CELStringValue", nullValue)
+	}
+	if !nullCELValue.IsNull() {
+		t.Fatalf("null ValueFromTerraform() = %#v, want null", nullCELValue)
 	}
 	if _, ok := typ.ValueType(context.Background()).(CELStringValue); !ok {
 		t.Fatalf("ValueType() = %T", typ.ValueType(context.Background()))
