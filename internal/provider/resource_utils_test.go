@@ -2,11 +2,7 @@
 
 package provider
 
-import (
-	"testing"
-
-	"github.com/hashicorp/terraform-plugin-framework/types"
-)
+import "testing"
 
 func TestCelEquivalent(t *testing.T) {
 	tests := []struct {
@@ -70,9 +66,9 @@ func TestPolicyRulesFromModelPreservesCELText(t *testing.T) {
 	versionSelector := "version.tag == \"two  spaces\"\n && version.name == 'api'"
 	environmentSelector := "environment.name == 'qa'\n || environment.name == 'staging'"
 	rules, diags := policyRulesFromModel(PolicyResourceModel{
-		VersionSelector: []PolicyVersionSelector{{Selector: types.StringValue(versionSelector)}},
+		VersionSelector: []PolicyVersionSelector{{Selector: celStringValue(versionSelector)}},
 		EnvironmentProgression: []PolicyEnvironmentProgression{
-			{DependsOnEnvironmentSelector: types.StringValue(environmentSelector)},
+			{DependsOnEnvironmentSelector: celStringValue(environmentSelector)},
 		},
 	})
 	if diags.HasError() {

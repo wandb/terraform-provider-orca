@@ -84,6 +84,7 @@ func (r *DeploymentResource) Schema(ctx context.Context, req resource.SchemaRequ
 				}(),
 			},
 			"resource_selector": schema.StringAttribute{
+				CustomType:  CELStringType{},
 				Optional:    true,
 				Description: "CEL expression used to select resources",
 				PlanModifiers: []planmodifier.String{
@@ -185,7 +186,7 @@ func (r *DeploymentResource) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
-	resourceSelector := optionalStringPtr(data.ResourceSelector)
+	resourceSelector := celStringPointer(data.ResourceSelector)
 
 	jobAgentConfig, err := deploymentJobAgentConfigStruct(&data)
 	if err != nil {
@@ -245,7 +246,7 @@ func (r *DeploymentResource) applyDeployment(data *DeploymentResourceModel, dep 
 	data.ID = types.StringValue(dep.GetId())
 	data.Name = types.StringValue(dep.GetName())
 	data.Metadata = metadataMapValue(dep.GetMetadata())
-	data.ResourceSelector = optionalString(dep.GetResourceSelector())
+	data.ResourceSelector = optionalCELStringValue(dep.GetResourceSelector())
 	data.JobAgentSelector = optionalSelector(dep.GetJobAgentSelector())
 
 	var jobAgentConfig map[string]interface{}
@@ -293,7 +294,7 @@ func (r *DeploymentResource) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	resourceSelector := optionalStringPtr(data.ResourceSelector)
+	resourceSelector := celStringPointer(data.ResourceSelector)
 
 	jobAgentConfig, err := deploymentJobAgentConfigStruct(&data)
 	if err != nil {
@@ -364,11 +365,11 @@ func (r *DeploymentResource) Delete(ctx context.Context, req resource.DeleteRequ
 }
 
 type DeploymentResourceModel struct {
-	ID               types.String `tfsdk:"id"`
-	Name             types.String `tfsdk:"name"`
-	Metadata         types.Map    `tfsdk:"metadata"`
-	ResourceSelector types.String `tfsdk:"resource_selector"`
-	JobAgentSelector types.String `tfsdk:"job_agent_selector"`
+	ID               types.String   `tfsdk:"id"`
+	Name             types.String   `tfsdk:"name"`
+	Metadata         types.Map      `tfsdk:"metadata"`
+	ResourceSelector CELStringValue `tfsdk:"resource_selector"`
+	JobAgentSelector types.String   `tfsdk:"job_agent_selector"`
 
 	ArgoCD         *DeploymentArgoCDModel       `tfsdk:"argocd"`
 	ArgoWorkflow   *DeploymentArgoWorkflowModel `tfsdk:"argo_workflow"`

@@ -31,12 +31,12 @@ type RelationshipRuleResource struct {
 }
 
 type RelationshipRuleResourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Reference   types.String `tfsdk:"reference"`
-	Description types.String `tfsdk:"description"`
-	Cel         types.String `tfsdk:"matcher"`
-	Metadata    types.Map    `tfsdk:"metadata"`
+	ID          types.String   `tfsdk:"id"`
+	Name        types.String   `tfsdk:"name"`
+	Reference   types.String   `tfsdk:"reference"`
+	Description types.String   `tfsdk:"description"`
+	Cel         CELStringValue `tfsdk:"matcher"`
+	Metadata    types.Map      `tfsdk:"metadata"`
 }
 
 func (r *RelationshipRuleResource) Metadata(ctx context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -88,6 +88,7 @@ func (r *RelationshipRuleResource) Schema(ctx context.Context, req resource.Sche
 				Description: "A description of the relationship rule",
 			},
 			"matcher": schema.StringAttribute{
+				CustomType:  CELStringType{},
 				Required:    true,
 				Description: "A CEL expression that defines the relationship rule",
 				PlanModifiers: []planmodifier.String{
@@ -140,7 +141,7 @@ func (r *RelationshipRuleResource) Create(ctx context.Context, req resource.Crea
 	data.Name = types.StringValue(rule.GetName())
 	data.Reference = types.StringValue(rule.GetReference())
 	data.Description = optionalString(rule.GetDescription())
-	data.Cel = types.StringValue(rule.GetCel())
+	data.Cel = celStringValue(rule.GetCel())
 	data.Metadata = metadataMapValue(rule.GetMetadata())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
@@ -171,7 +172,7 @@ func (r *RelationshipRuleResource) Read(ctx context.Context, req resource.ReadRe
 	data.Name = types.StringValue(rule.GetName())
 	data.Reference = types.StringValue(rule.GetReference())
 	data.Description = optionalString(rule.GetDescription())
-	data.Cel = types.StringValue(rule.GetCel())
+	data.Cel = celStringValue(rule.GetCel())
 	data.Metadata = metadataMapValue(rule.GetMetadata())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -217,7 +218,7 @@ func (r *RelationshipRuleResource) Update(ctx context.Context, req resource.Upda
 	data.Name = types.StringValue(rule.GetName())
 	data.Reference = types.StringValue(rule.GetReference())
 	data.Description = optionalString(rule.GetDescription())
-	data.Cel = types.StringValue(rule.GetCel())
+	data.Cel = celStringValue(rule.GetCel())
 	data.Metadata = metadataMapValue(rule.GetMetadata())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
