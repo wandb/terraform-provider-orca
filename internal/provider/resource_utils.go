@@ -4,7 +4,6 @@ package provider
 
 import (
 	"context"
-	"strings"
 
 	"github.com/google/cel-go/cel"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
@@ -13,7 +12,7 @@ import (
 
 // celEnv is used only to parse selector strings into an AST so we can compare
 // them structurally. Parsing is purely syntactic and needs no declarations.
-var celEnv, _ = cel.NewEnv()
+var celEnv, _ = cel.NewEnv(cel.EnableMacroCallTracking())
 
 func stringMapPointer(value types.Map) *map[string]string {
 	if value.IsNull() || value.IsUnknown() {
@@ -59,14 +58,15 @@ func celCanonical(expr string) (string, bool) {
 // parenthesized — are treated as equal. It does NOT recognize boolean-algebra
 // rewrites (e.g. factoring `(p && a) || (p && b)` into `p && (a || b)`); those
 // produce different ASTs and remain a visible diff. When either side fails to
-// parse, it falls back to whitespace-collapsed string comparison.
+// parse, only exact string equality is accepted.
 func celEquivalent(a, b string) bool {
+	if a == b {
+		return true
+	}
+
 	ca, okA := celCanonical(a)
 	cb, okB := celCanonical(b)
-	if okA && okB {
-		return ca == cb
-	}
-	return strings.Join(strings.Fields(a), " ") == strings.Join(strings.Fields(b), " ")
+	return okA && okB && ca == cb
 }
 
 // celNormalizedPlanModifier keeps the prior state value when the planned

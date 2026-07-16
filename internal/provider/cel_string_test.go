@@ -18,8 +18,10 @@ func TestCELStringValueSemanticEquals(t *testing.T) {
 	}{
 		{"multiline", "resource.kind == 'service'\n && resource.name == 'api'", "resource.kind == 'service' && resource.name == 'api'", true},
 		{"server parentheses", "resource.kind == 'service' && resource.name == 'api'", "(resource.kind == 'service') && (resource.name == 'api')", true},
+		{"macro formatting", "[1,2].exists(x,x>1)", "([1, 2].exists(x, x > 1))", true},
 		{"different", "resource.name == 'api'", "resource.name == 'worker'", false},
-		{"unparsable fallback", "resource.  missing", "resource. missing", true},
+		{"identical unparsable", `resource.name == "two  spaces" ???`, `resource.name == "two  spaces" ???`, true},
+		{"unparsable literal whitespace", `resource.name == "two  spaces" ???`, `resource.name == "two spaces" ???`, false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
