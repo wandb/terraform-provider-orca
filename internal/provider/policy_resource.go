@@ -115,7 +115,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
@@ -123,7 +123,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"selector": schema.StringAttribute{
@@ -148,7 +148,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
@@ -156,7 +156,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"duration": schema.StringAttribute{
@@ -174,14 +174,14 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"duration_minutes": schema.Int64Attribute{
@@ -213,7 +213,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
@@ -221,7 +221,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"depends_on_selector": schema.StringAttribute{
@@ -239,7 +239,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
@@ -247,7 +247,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"trigger_on": schema.StringAttribute{
@@ -441,14 +441,14 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"rollout_type": schema.StringAttribute{
@@ -470,14 +470,14 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"min_approvals": schema.Int64Attribute{
@@ -495,14 +495,14 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"depends_on_environment_selector": schema.StringAttribute{
@@ -537,14 +537,14 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Computed:    true,
 							Description: "Rule creation timestamp",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"id": schema.StringAttribute{
 							Computed:    true,
 							Description: "Rule ID",
 							PlanModifiers: []planmodifier.String{
-								stringplanmodifier.UseStateForUnknown(),
+								stringplanmodifier.UseNonNullStateForUnknown(),
 							},
 						},
 						"name": schema.StringAttribute{
