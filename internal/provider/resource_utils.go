@@ -6,8 +6,11 @@ import (
 	"context"
 
 	"github.com/google/cel-go/cel"
+	celast "github.com/google/cel-go/common/ast"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
 )
 
 // celEnv is used only to parse selector strings into an AST so we can compare
@@ -37,23 +40,52 @@ func stringMapValue(value *map[string]string) types.Map {
 	return result
 }
 
-// celCanonical parses a CEL selector and re-emits it in cel-go's canonical
-// form, collapsing the author's parenthesization to a single deterministic
-// shape. Returns ("", false) when the string does not parse.
-func celCanonical(expr string) (string, bool) {
-	ast, iss := celEnv.Parse(expr)
-	if iss != nil && iss.Err() != nil {
-		return "", false
+// parsedCELExpr parses a CEL selector and returns only its expression tree,
+// excluding source positions and other parse metadata.
+func parsedCELExpr(expression string) (*exprpb.Expr, bool) {
+	parsed, issues := celEnv.Parse(expression)
+	if issues != nil && issues.Err() != nil {
+		return nil, false
 	}
-	out, err := cel.AstToString(ast)
+	parsedExpr, err := cel.AstToParsedExpr(parsed)
 	if err != nil {
+		return nil, false
+	}
+	return parsedExpr.GetExpr(), true
+}
+
+// celCanonical re-emits a CEL selector in cel-go's stable text form. It is a
+// fallback for equivalent logical expressions that Ctrlplane reassociates into
+// a different tree shape.
+func celCanonical(expression string) (string, bool) {
+	parsed, issues := celEnv.Parse(expression)
+	if issues != nil && issues.Err() != nil {
 		return "", false
 	}
-	return out, true
+	canonical, err := cel.AstToString(parsed)
+	return canonical, err == nil
+}
+
+// celProtoEquivalent compares parsed CEL expression trees without their node
+// IDs, which cel-go does not guarantee to keep stable between compilations.
+func celProtoEquivalent(left, right *exprpb.Expr) bool {
+	normalize := func(expression *exprpb.Expr) (*exprpb.Expr, bool) {
+		native, err := celast.ProtoToExpr(expression)
+		if err != nil {
+			return nil, false
+		}
+		native.RenumberIDs(func(int64) int64 { return 0 })
+		normalized, err := celast.ExprToProto(native)
+		return normalized, err == nil
+	}
+
+	normalizedLeft, okLeft := normalize(left)
+	normalizedRight, okRight := normalize(right)
+	return okLeft && okRight && proto.Equal(normalizedLeft, normalizedRight)
 }
 
 // celEquivalent reports whether two selector strings are the same expression.
-// It compares canonical ASTs so that diffs which differ only in
+// It compares parsed expression trees so that diffs which differ only in
 // parenthesization or whitespace — the engine re-serializes selectors fully
 // parenthesized — are treated as equal. It does NOT recognize boolean-algebra
 // rewrites (e.g. factoring `(p && a) || (p && b)` into `p && (a || b)`); those
@@ -64,9 +96,18 @@ func celEquivalent(a, b string) bool {
 		return true
 	}
 
-	ca, okA := celCanonical(a)
-	cb, okB := celCanonical(b)
-	return okA && okB && ca == cb
+	left, okLeft := parsedCELExpr(a)
+	right, okRight := parsedCELExpr(b)
+	if !okLeft || !okRight {
+		return false
+	}
+	if celProtoEquivalent(left, right) {
+		return true
+	}
+
+	canonicalLeft, okLeft := celCanonical(a)
+	canonicalRight, okRight := celCanonical(b)
+	return okLeft && okRight && canonicalLeft == canonicalRight
 }
 
 // celNormalizedPlanModifier keeps the prior state value when the planned
