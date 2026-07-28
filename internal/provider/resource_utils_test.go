@@ -12,7 +12,7 @@ import (
 
 func TestCELProtoEquivalentIgnoresIDs(t *testing.T) {
 	left := mustParseCELExpr(t, `{"key": resource.name}`)
-	right := proto.Clone(left).(*exprpb.Expr)
+	right := proto.CloneOf(left)
 
 	right.Id += 1000
 	entry := right.GetStructExpr().GetEntries()[0]
