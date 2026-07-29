@@ -41,10 +41,11 @@ type WorkflowResourceModel struct {
 }
 
 type WorkflowJobAgentModel struct {
-	Name     types.String `tfsdk:"name"`
-	Ref      types.String `tfsdk:"ref"`
-	Config   types.Map    `tfsdk:"config"`
-	Selector types.String `tfsdk:"selector"`
+	Name       types.String `tfsdk:"name"`
+	Ref        types.String `tfsdk:"ref"`
+	Config     types.Map    `tfsdk:"config"`
+	ConfigJSON types.String `tfsdk:"config_json"`
+	Selector   types.String `tfsdk:"selector"`
 }
 
 func (r *WorkflowResource) Metadata(_ context.Context, req resource.MetadataRequest, resp *resource.MetadataResponse) {
@@ -109,9 +110,13 @@ func (r *WorkflowResource) Schema(_ context.Context, _ resource.SchemaRequest, r
 							Description: "ID of the job agent to reference.",
 						},
 						"config": schema.MapAttribute{
-							Required:    true,
-							Description: "Configuration for the job agent.",
+							Optional:    true,
+							Description: "String configuration for the job agent. Conflicts with config_json.",
 							ElementType: types.StringType,
+						},
+						"config_json": schema.StringAttribute{
+							Optional:    true,
+							Description: "JSON-encoded configuration for the job agent. Use this for numbers, booleans, lists, or nested objects. Conflicts with config.",
 						},
 						"selector": schema.StringAttribute{
 							Required:    true,
@@ -291,13 +296,9 @@ func normalizeInputsValue(v any) string {
 func workflowJobAgentsToValue(agents []WorkflowJobAgentModel) (*structpb.Value, error) {
 	list := make([]any, len(agents))
 	for i, a := range agents {
-		config := map[string]any{}
-		if !a.Config.IsNull() && !a.Config.IsUnknown() {
-			var decoded map[string]string
-			_ = a.Config.ElementsAs(context.Background(), &decoded, false)
-			for k, v := range decoded {
-				config[k] = v
-			}
+		config, err := workflowJobAgentConfigToMap(a)
+		if err != nil {
+			return nil, fmt.Errorf("job agent %q: %w", a.Name.ValueString(), err)
 		}
 		list[i] = map[string]any{
 			"name":     a.Name.ValueString(),
@@ -309,9 +310,47 @@ func workflowJobAgentsToValue(agents []WorkflowJobAgentModel) (*structpb.Value, 
 	return structpb.NewValue(list)
 }
 
+func workflowJobAgentConfigToMap(agent WorkflowJobAgentModel) (map[string]any, error) {
+	configKnown := !agent.Config.IsNull() && !agent.Config.IsUnknown()
+	configJSONKnown := !agent.ConfigJSON.IsNull() && !agent.ConfigJSON.IsUnknown()
+
+	if agent.Config.IsUnknown() || agent.ConfigJSON.IsUnknown() {
+		return nil, fmt.Errorf("config and config_json must be known before applying")
+	}
+	if configKnown == configJSONKnown {
+		return nil, fmt.Errorf("exactly one of config or config_json must be set")
+	}
+
+	if configKnown {
+		var decoded map[string]string
+		diags := agent.Config.ElementsAs(context.Background(), &decoded, false)
+		if diags.HasError() {
+			return nil, fmt.Errorf("failed to decode config string map: %s", diags.Errors()[0].Detail())
+		}
+
+		config := make(map[string]any, len(decoded))
+		for key, value := range decoded {
+			config[key] = value
+		}
+		return config, nil
+	}
+
+	var decoded any
+	if err := json.Unmarshal([]byte(agent.ConfigJSON.ValueString()), &decoded); err != nil {
+		return nil, fmt.Errorf("config_json must contain a valid JSON object: %w", err)
+	}
+	config, ok := decoded.(map[string]any)
+	if !ok || config == nil {
+		return nil, fmt.Errorf("config_json must contain a valid JSON object")
+	}
+	return config, nil
+}
+
 // workflowJobAgentsFromValue rebuilds the typed job-agent blocks from the proto
-// JobAgents Value. A nil or non-list Value yields an empty slice.
-func workflowJobAgentsFromValue(val *structpb.Value) []WorkflowJobAgentModel {
+// JobAgents Value. The prior state selects config or config_json to avoid
+// changing representations during refresh. A nil or non-list Value yields an
+// empty slice.
+func workflowJobAgentsFromValue(val *structpb.Value, prior []WorkflowJobAgentModel) []WorkflowJobAgentModel {
 	if val == nil {
 		return []WorkflowJobAgentModel{}
 	}
@@ -322,18 +361,60 @@ func workflowJobAgentsFromValue(val *structpb.Value) []WorkflowJobAgentModel {
 	agents := make([]WorkflowJobAgentModel, len(raw))
 	for i, item := range raw {
 		obj, _ := item.(map[string]any)
-		var config map[string]interface{}
+		config := map[string]any{}
 		if c, ok := obj["config"].(map[string]any); ok {
 			config = c
 		}
-		agents[i] = WorkflowJobAgentModel{
-			Name:     types.StringValue(stringFromAny(obj["name"])),
-			Ref:      types.StringValue(stringFromAny(obj["ref"])),
-			Config:   interfaceMapStringValue(config),
+
+		name := stringFromAny(obj["name"])
+		ref := stringFromAny(obj["ref"])
+		agent := WorkflowJobAgentModel{
+			Name:     types.StringValue(name),
+			Ref:      types.StringValue(ref),
 			Selector: types.StringValue(stringFromAny(obj["selector"])),
 		}
+		if workflowJobAgentUsedConfigJSON(prior, i, name, ref) || !workflowConfigContainsOnlyStrings(config) {
+			agent.Config = types.MapNull(types.StringType)
+			agent.ConfigJSON = workflowConfigJSONValue(config)
+		} else {
+			agent.Config = interfaceMapStringValue(config)
+			agent.ConfigJSON = types.StringNull()
+		}
+		agents[i] = agent
 	}
 	return agents
+}
+
+func workflowJobAgentUsedConfigJSON(prior []WorkflowJobAgentModel, index int, name, ref string) bool {
+	if index < len(prior) {
+		candidate := prior[index]
+		if candidate.Name.ValueString() == name && candidate.Ref.ValueString() == ref {
+			return !candidate.ConfigJSON.IsNull() && !candidate.ConfigJSON.IsUnknown()
+		}
+	}
+	for _, candidate := range prior {
+		if candidate.Name.ValueString() == name && candidate.Ref.ValueString() == ref {
+			return !candidate.ConfigJSON.IsNull() && !candidate.ConfigJSON.IsUnknown()
+		}
+	}
+	return false
+}
+
+func workflowConfigContainsOnlyStrings(config map[string]any) bool {
+	for _, value := range config {
+		if _, ok := value.(string); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func workflowConfigJSONValue(config map[string]any) types.String {
+	encoded, err := json.Marshal(config)
+	if err != nil {
+		return types.StringValue("{}")
+	}
+	return types.StringValue(string(encoded))
 }
 
 func stringFromAny(v any) string {
@@ -347,9 +428,10 @@ func stringFromAny(v any) string {
 }
 
 func setWorkflowModelFromProto(data *WorkflowResourceModel, w *apiv1.Workflow) {
+	priorJobAgents := data.JobAgents
 	data.ID = types.StringValue(w.GetId())
 	data.Name = types.StringValue(w.GetName())
 	data.Slug = types.StringValue(w.GetSlug())
 	data.Inputs = workflowInputsFromValue(w.GetInputs())
-	data.JobAgents = workflowJobAgentsFromValue(w.GetJobAgents())
+	data.JobAgents = workflowJobAgentsFromValue(w.GetJobAgents(), priorJobAgents)
 }

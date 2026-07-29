@@ -34,7 +34,11 @@ Manages a workflow in Ctrlplane.
 
 Required:
 
-- `config` (Map of String) Configuration for the job agent.
 - `name` (String) Name of the job agent entry.
 - `ref` (String) ID of the job agent to reference.
 - `selector` (String) CEL expression to determine if the job agent should dispatch. Use "true" to always dispatch.
+
+Optional:
+
+- `config` (Map of String) String configuration for the job agent. Conflicts with config_json.
+- `config_json` (String) JSON-encoded configuration for the job agent. Use this for numbers, booleans, lists, or nested objects. Conflicts with config.
