@@ -35,12 +35,12 @@ type DeploymentVariableValueResource struct {
 }
 
 type DeploymentVariableValueResourceModel struct {
-	ID               types.String  `tfsdk:"id"`
-	VariableId       types.String  `tfsdk:"variable_id"`
-	Priority         types.Int64   `tfsdk:"priority"`
-	ResourceSelector types.String  `tfsdk:"resource_selector"`
-	LiteralValue     types.Dynamic `tfsdk:"literal_value"`
-	ReferenceValue   types.Object  `tfsdk:"reference_value"`
+	ID               types.String   `tfsdk:"id"`
+	VariableId       types.String   `tfsdk:"variable_id"`
+	Priority         types.Int64    `tfsdk:"priority"`
+	ResourceSelector CELStringValue `tfsdk:"resource_selector"`
+	LiteralValue     types.Dynamic  `tfsdk:"literal_value"`
+	ReferenceValue   types.Object   `tfsdk:"reference_value"`
 }
 
 var referenceValueAttrTypes = map[string]attr.Type{
@@ -93,6 +93,7 @@ func (r *DeploymentVariableValueResource) Schema(ctx context.Context, req resour
 				MarkdownDescription: "The priority of the variable value. Higher priority values take precedence when multiple values match.",
 			},
 			"resource_selector": schema.StringAttribute{
+				CustomType:          CELStringType{},
 				Optional:            true,
 				MarkdownDescription: "A CEL expression to select which resources this value applies to.",
 				PlanModifiers: []planmodifier.String{
@@ -170,10 +171,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := celStringPointer(data.ResourceSelector)
 
 	created, err := r.workspace.Deployment.UpsertDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableValueRequest{
 		WorkspaceId:          r.workspace.WorkspaceID(),
@@ -254,11 +252,7 @@ func applyDeploymentVariableValue(ctx context.Context, data *DeploymentVariableV
 	data.VariableId = types.StringValue(value.GetDeploymentVariableId())
 	data.Priority = types.Int64Value(value.GetPriority())
 
-	if selector := value.GetResourceSelector(); selector != "" {
-		data.ResourceSelector = types.StringValue(selector)
-	} else {
-		data.ResourceSelector = types.StringNull()
-	}
+	data.ResourceSelector = optionalCELStringValue(value.GetResourceSelector())
 
 	return setValueOnModel(ctx, data, value.GetValue())
 }
@@ -276,10 +270,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	var selector *string
-	if cel := normalizeCEL(data.ResourceSelector); cel != "" {
-		selector = &cel
-	}
+	selector := celStringPointer(data.ResourceSelector)
 
 	upserted, err := r.workspace.Deployment.UpsertDeploymentVariableValue(ctx, connect.NewRequest(&apiv1.UpsertDeploymentVariableValueRequest{
 		WorkspaceId:          r.workspace.WorkspaceID(),

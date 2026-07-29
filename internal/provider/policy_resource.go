@@ -127,6 +127,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							},
 						},
 						"selector": schema.StringAttribute{
+							CustomType:  CELStringType{},
 							Required:    true,
 							Description: "CEL expression to match allowed versions (has access to version, environment, resource, and deployment variables)",
 							PlanModifiers: []planmodifier.String{
@@ -506,6 +507,7 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							},
 						},
 						"depends_on_environment_selector": schema.StringAttribute{
+							CustomType:  CELStringType{},
 							Required:    true,
 							Description: "CEL expression to match the environment that must have a successful release before this environment can proceed",
 							PlanModifiers: []planmodifier.String{
@@ -800,10 +802,10 @@ type PolicyResourceModel struct {
 }
 
 type PolicyVersionSelector struct {
-	CreatedAt   types.String `tfsdk:"created_at"`
-	ID          types.String `tfsdk:"id"`
-	Selector    types.String `tfsdk:"selector"`
-	Description types.String `tfsdk:"description"`
+	CreatedAt   types.String   `tfsdk:"created_at"`
+	ID          types.String   `tfsdk:"id"`
+	Selector    CELStringValue `tfsdk:"selector"`
+	Description types.String   `tfsdk:"description"`
 }
 
 type PolicyVersionCooldown struct {
@@ -841,12 +843,12 @@ type PolicyAnyApproval struct {
 }
 
 type PolicyEnvironmentProgression struct {
-	CreatedAt                    types.String  `tfsdk:"created_at"`
-	ID                           types.String  `tfsdk:"id"`
-	DependsOnEnvironmentSelector types.String  `tfsdk:"depends_on_environment_selector"`
-	MinimumSuccessPercentage     types.Float64 `tfsdk:"minimum_success_percentage"`
-	MinimumSoakTimeMinutes       types.Int64   `tfsdk:"minimum_soak_time_minutes"`
-	MaximumAgeHours              types.Int64   `tfsdk:"maximum_age_hours"`
+	CreatedAt                    types.String   `tfsdk:"created_at"`
+	ID                           types.String   `tfsdk:"id"`
+	DependsOnEnvironmentSelector CELStringValue `tfsdk:"depends_on_environment_selector"`
+	MinimumSuccessPercentage     types.Float64  `tfsdk:"minimum_success_percentage"`
+	MinimumSoakTimeMinutes       types.Int64    `tfsdk:"minimum_soak_time_minutes"`
+	MaximumAgeHours              types.Int64    `tfsdk:"maximum_age_hours"`
 }
 
 type PolicyVerificationRule struct {
@@ -997,7 +999,7 @@ func policyRulesFromModel(data PolicyResourceModel) ([]*apiv1.PolicyRule, diag.D
 	rules := make([]*apiv1.PolicyRule, 0)
 
 	for _, vs := range data.VersionSelector {
-		cel := normalizeCEL(vs.Selector)
+		cel := vs.Selector.ValueString()
 		if cel == "" {
 			diags.AddError("Invalid version selector", "selector must be set")
 			continue
@@ -1091,7 +1093,7 @@ func policyRulesFromModel(data PolicyResourceModel) ([]*apiv1.PolicyRule, diag.D
 	}
 
 	for _, progression := range data.EnvironmentProgression {
-		cel := normalizeCEL(progression.DependsOnEnvironmentSelector)
+		cel := progression.DependsOnEnvironmentSelector.ValueString()
 		if cel == "" {
 			diags.AddError("Invalid environment progression selector", "depends_on_environment_selector must be set")
 			continue
@@ -1437,7 +1439,7 @@ func policyRulesToModel(rules []*apiv1.PolicyRule) (policyRulesModel, diag.Diagn
 			model := PolicyVersionSelector{
 				CreatedAt:   createdAt,
 				ID:          id,
-				Selector:    types.StringValue(vs.GetSelector()),
+				Selector:    celStringValue(vs.GetSelector()),
 				Description: optionalString(vs.GetDescription()),
 			}
 			result.VersionSelector = append(result.VersionSelector, model)
@@ -1493,7 +1495,7 @@ func policyRulesToModel(rules []*apiv1.PolicyRule) (policyRulesModel, diag.Diagn
 			model := PolicyEnvironmentProgression{
 				CreatedAt:                    createdAt,
 				ID:                           id,
-				DependsOnEnvironmentSelector: types.StringValue(progression.GetDependsOnEnvironmentSelector()),
+				DependsOnEnvironmentSelector: celStringValue(progression.GetDependsOnEnvironmentSelector()),
 				MinimumSuccessPercentage:     types.Float64Null(),
 				MinimumSoakTimeMinutes:       types.Int64Value(int64(progression.GetMinimumSoakTimeMinutes())),
 				MaximumAgeHours:              types.Int64Null(),

@@ -34,12 +34,12 @@ type VariableSetResource struct {
 }
 
 type VariableSetResourceModel struct {
-	ID          types.String `tfsdk:"id"`
-	Name        types.String `tfsdk:"name"`
-	Description types.String `tfsdk:"description"`
-	Selector    types.String `tfsdk:"selector"`
-	Priority    types.Int64  `tfsdk:"priority"`
-	Variables   types.List   `tfsdk:"variables"`
+	ID          types.String   `tfsdk:"id"`
+	Name        types.String   `tfsdk:"name"`
+	Description types.String   `tfsdk:"description"`
+	Selector    CELStringValue `tfsdk:"selector"`
+	Priority    types.Int64    `tfsdk:"priority"`
+	Variables   types.List     `tfsdk:"variables"`
 }
 
 type VariableSetVariableModel struct {
@@ -100,6 +100,7 @@ func (r *VariableSetResource) Schema(ctx context.Context, req resource.SchemaReq
 				MarkdownDescription: "A description of the variable set.",
 			},
 			"selector": schema.StringAttribute{
+				CustomType:          CELStringType{},
 				Required:            true,
 				MarkdownDescription: "A CEL expression to select which release targets this variable set applies to.",
 				PlanModifiers: []planmodifier.String{
@@ -168,7 +169,7 @@ func (r *VariableSetResource) Create(ctx context.Context, req resource.CreateReq
 	created, err := r.workspace.VariableSet.CreateVariableSet(ctx, connect.NewRequest(&apiv1.CreateVariableSetRequest{
 		WorkspaceId: r.workspace.WorkspaceID(),
 		Name:        data.Name.ValueString(),
-		Selector:    normalizeCEL(data.Selector),
+		Selector:    data.Selector.ValueString(),
 		Description: data.Description.ValueStringPointer(),
 		Priority:    &priority,
 		Variables:   variables,
@@ -220,7 +221,7 @@ func (r *VariableSetResource) Read(ctx context.Context, req resource.ReadRequest
 	data.ID = types.StringValue(vs.GetId())
 	data.Name = types.StringValue(vs.GetName())
 	data.Description = optionalString(vs.GetDescription())
-	data.Selector = types.StringValue(vs.GetSelector())
+	data.Selector = celStringValue(vs.GetSelector())
 	data.Priority = types.Int64Value(int64(vs.GetPriority()))
 
 	varList, diags := vsVariablesToModel(vs.GetVariables())
@@ -248,7 +249,7 @@ func (r *VariableSetResource) Update(ctx context.Context, req resource.UpdateReq
 
 	name := data.Name.ValueString()
 	priority := int32(data.Priority.ValueInt64())
-	selector := normalizeCEL(data.Selector)
+	selector := data.Selector.ValueString()
 
 	updated, err := r.workspace.VariableSet.UpdateVariableSet(ctx, connect.NewRequest(&apiv1.UpdateVariableSetRequest{
 		WorkspaceId:   r.workspace.WorkspaceID(),

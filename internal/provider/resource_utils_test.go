@@ -2,7 +2,45 @@
 
 package provider
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/google/cel-go/cel"
+	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
+	"google.golang.org/protobuf/proto"
+)
+
+func TestCELProtoEquivalentIgnoresIDs(t *testing.T) {
+	left := mustParseCELExpr(t, `{"key": resource.name}`)
+	right := proto.CloneOf(left)
+
+	right.Id += 1000
+	entry := right.GetStructExpr().GetEntries()[0]
+	entry.Id += 1000
+	entry.GetMapKey().Id += 1000
+	entry.GetValue().Id += 1000
+	entry.GetValue().GetSelectExpr().GetOperand().Id += 1000
+
+	if proto.Equal(left, right) {
+		t.Fatal("test setup did not change expression IDs")
+	}
+	if !celProtoEquivalent(left, right) {
+		t.Fatal("celProtoEquivalent() = false, want true for ID-only differences")
+	}
+}
+
+func mustParseCELExpr(t *testing.T, expression string) *exprpb.Expr {
+	t.Helper()
+	parsed, issues := celEnv.Parse(expression)
+	if issues != nil && issues.Err() != nil {
+		t.Fatalf("Parse(%q): %v", expression, issues.Err())
+	}
+	parsedExpr, err := cel.AstToParsedExpr(parsed)
+	if err != nil {
+		t.Fatalf("AstToParsedExpr(%q): %v", expression, err)
+	}
+	return parsedExpr.GetExpr()
+}
 
 func TestCelEquivalent(t *testing.T) {
 	tests := []struct {
@@ -59,5 +97,25 @@ func TestCelEquivalent(t *testing.T) {
 				t.Errorf("celEquivalent(%q, %q) = %v, want %v", tt.state, tt.plan, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestPolicyRulesFromModelPreservesCELText(t *testing.T) {
+	versionSelector := "version.tag == \"two  spaces\"\n && version.name == 'api'"
+	environmentSelector := "environment.name == 'qa'\n || environment.name == 'staging'"
+	rules, diags := policyRulesFromModel(PolicyResourceModel{
+		VersionSelector: []PolicyVersionSelector{{Selector: celStringValue(versionSelector)}},
+		EnvironmentProgression: []PolicyEnvironmentProgression{
+			{DependsOnEnvironmentSelector: celStringValue(environmentSelector)},
+		},
+	})
+	if diags.HasError() {
+		t.Fatalf("policyRulesFromModel() diagnostics: %v", diags)
+	}
+	if got := rules[0].GetVersionSelector().GetSelector(); got != versionSelector {
+		t.Fatalf("version selector = %q, want %q", got, versionSelector)
+	}
+	if got := rules[1].GetEnvironmentProgression().GetDependsOnEnvironmentSelector(); got != environmentSelector {
+		t.Fatalf("environment selector = %q, want %q", got, environmentSelector)
 	}
 }

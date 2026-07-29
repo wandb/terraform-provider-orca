@@ -1,0 +1,95 @@
+// Copyright IBM Corp. 2021, 2026
+// SPDX-License-Identifier: MPL-2.0
+
+package provider
+
+import (
+	"context"
+	"testing"
+
+	"github.com/hashicorp/terraform-plugin-framework/types/basetypes"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
+)
+
+func TestCELStringValueSemanticEquals(t *testing.T) {
+	tests := []struct {
+		name, left, right string
+		want              bool
+	}{
+		{"multiline", "resource.kind == 'service'\n && resource.name == 'api'", "resource.kind == 'service' && resource.name == 'api'", true},
+		{"server parentheses", "resource.kind == 'service' && resource.name == 'api'", "(resource.kind == 'service') && (resource.name == 'api')", true},
+		{"macro formatting", "[1,2].exists(x,x>1)", "([1, 2].exists(x, x > 1))", true},
+		{"different", "resource.name == 'api'", "resource.name == 'worker'", false},
+		{"identical unparsable", `resource.name == "two  spaces" ???`, `resource.name == "two  spaces" ???`, true},
+		{"unparsable literal whitespace", `resource.name == "two  spaces" ???`, `resource.name == "two spaces" ???`, false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, diags := celStringValue(tt.left).StringSemanticEquals(context.Background(), celStringValue(tt.right))
+			if diags.HasError() {
+				t.Fatalf("StringSemanticEquals() diagnostics: %v", diags)
+			}
+			if got != tt.want {
+				t.Fatalf("StringSemanticEquals() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCELStringTypeValueConversion(t *testing.T) {
+	typ := CELStringType{}
+	value, err := typ.ValueFromTerraform(context.Background(), tftypes.NewValue(tftypes.String, "resource.name == 'api'"))
+	if err != nil {
+		t.Fatalf("ValueFromTerraform() error: %v", err)
+	}
+	celValue, ok := value.(CELStringValue)
+	if !ok || celValue.ValueString() != "resource.name == 'api'" {
+		t.Fatalf("ValueFromTerraform() = %#v (%T)", value, value)
+	}
+	nullValue, err := typ.ValueFromTerraform(context.Background(), tftypes.NewValue(tftypes.String, nil))
+	if err != nil {
+		t.Fatalf("null ValueFromTerraform() error: %v", err)
+	}
+	nullCELValue, ok := nullValue.(CELStringValue)
+	if !ok {
+		t.Fatalf("null ValueFromTerraform() = %T, want CELStringValue", nullValue)
+	}
+	if !nullCELValue.IsNull() {
+		t.Fatalf("null ValueFromTerraform() = %#v, want null", nullCELValue)
+	}
+	if _, ok := typ.ValueType(context.Background()).(CELStringValue); !ok {
+		t.Fatalf("ValueType() = %T", typ.ValueType(context.Background()))
+	}
+	if !typ.Equal(CELStringType{}) || typ.Equal(basetypes.StringType{}) {
+		t.Fatal("CELStringType.Equal() did not distinguish the custom type")
+	}
+	fromString, diags := typ.ValueFromString(context.Background(), basetypes.NewStringValue("true"))
+	if diags.HasError() {
+		t.Fatalf("ValueFromString() diagnostics: %v", diags)
+	}
+	directValue, ok := fromString.(CELStringValue)
+	if !ok || !directValue.Equal(celStringValue("true")) {
+		t.Fatalf("ValueFromString() = %#v (%T)", fromString, fromString)
+	}
+	if _, ok := directValue.Type(context.Background()).(CELStringType); !ok {
+		t.Fatalf("CELStringValue.Type() = %T", directValue.Type(context.Background()))
+	}
+}
+
+func TestCELStringHelpersPreserveRawText(t *testing.T) {
+	raw := "resource.name == \"two  spaces\"\n && resource.kind == 'service'"
+	value := celStringValue(raw)
+	if value.ValueString() != raw {
+		t.Fatalf("celStringValue() = %q, want %q", value.ValueString(), raw)
+	}
+	if got := celStringPointer(value); got == nil || *got != raw {
+		t.Fatalf("celStringPointer() = %v, want %q", got, raw)
+	}
+	if got := celStringPointer(optionalCELStringValue("")); got != nil {
+		t.Fatalf("celStringPointer(null) = %v, want nil", got)
+	}
+	unknown := CELStringValue{StringValue: basetypes.NewStringUnknown()}
+	if got := celStringPointer(unknown); got != nil {
+		t.Fatalf("celStringPointer(unknown) = %v, want nil", got)
+	}
+}

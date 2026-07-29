@@ -113,6 +113,52 @@ func TestAccDeploymentVariableValueResource_reference(t *testing.T) {
 	})
 }
 
+func TestAccDeploymentVariableValueResource_multilineSelector(t *testing.T) {
+	name := fmt.Sprintf("tf-acc-varval-multiline-%d", time.Now().UnixNano())
+	initial := fmt.Sprintf("resource.name == %q\n  && resource.kind == \"service\"\n", name)
+	updated := fmt.Sprintf("resource.name == %q\n  && resource.kind == \"worker\"\n", name)
+
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{
+				Config: testAccDeploymentVariableValueResourceConfigMultilineSelector(name, initial, 100),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"ctrlplane_deployment_variable_value.test",
+						tfjsonpath.New("resource_selector"),
+						knownvalue.StringExact(initial),
+					),
+				},
+			},
+			{RefreshState: true},
+			{
+				Config: testAccDeploymentVariableValueResourceConfigMultilineSelector(name, updated, 200),
+				ConfigStateChecks: []statecheck.StateCheck{
+					statecheck.ExpectKnownValue(
+						"ctrlplane_deployment_variable_value.test",
+						tfjsonpath.New("resource_selector"),
+						knownvalue.StringExact(updated),
+					),
+					statecheck.ExpectKnownValue(
+						"ctrlplane_deployment_variable_value.test",
+						tfjsonpath.New("priority"),
+						knownvalue.Int64Exact(200),
+					),
+				},
+			},
+			{RefreshState: true},
+			{
+				Config: testAccDeploymentVariableValueResourceConfigMultilineSelector(name, updated, 200),
+				ConfigPlanChecks: resource.ConfigPlanChecks{
+					PreApply: []plancheck.PlanCheck{plancheck.ExpectEmptyPlan()},
+				},
+			},
+		},
+	})
+}
+
 func TestAccDeploymentVariableValueResource_literalTypes(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -241,4 +287,28 @@ resource "ctrlplane_deployment_variable_value" "test" {
   }
 }
 `, testAccProviderConfig(), name, name+"-deployment", name, name)
+}
+
+func testAccDeploymentVariableValueResourceConfigMultilineSelector(name, selector string, priority int64) string {
+	return fmt.Sprintf(`
+%s
+resource "ctrlplane_system" "test" {
+  name = %q
+}
+resource "ctrlplane_deployment" "test" {
+  name              = %q
+  resource_selector = "resource.name == '%s'"
+}
+resource "ctrlplane_deployment_variable" "test" {
+  deployment_id = ctrlplane_deployment.test.id
+  key           = %q
+}
+resource "ctrlplane_deployment_variable_value" "test" {
+  variable_id = ctrlplane_deployment_variable.test.id
+  priority    = %d
+  resource_selector = <<EOT
+%sEOT
+  literal_value = "multiline"
+}
+`, testAccProviderConfig(), name, name+"-deployment", name, name, priority, selector)
 }
