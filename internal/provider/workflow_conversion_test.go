@@ -169,9 +169,41 @@ func TestWorkflowJobAgentConfigJSONRoundTrip(t *testing.T) {
 	if !out[0].Config.IsNull() {
 		t.Fatalf("config = %v, want null", out[0].Config)
 	}
-	const want = `{"enabled":true,"nested":{"retries":3},"repos":["deployments"],"workflowId":321561144}`
+	const want = `{"workflowId":321561144,"enabled":true,"repos":["deployments"],"nested":{"retries":3}}`
 	if got := out[0].ConfigJSON.ValueString(); got != want {
 		t.Fatalf("config_json = %q, want %q", got, want)
+	}
+}
+
+func TestWorkflowJobAgentConfigJSONReflectsRemoteChanges(t *testing.T) {
+	t.Parallel()
+
+	prior := []WorkflowJobAgentModel{{
+		Name:       types.StringValue("managed-spec"),
+		Ref:        types.StringValue("agent-id"),
+		Config:     types.MapNull(types.StringType),
+		ConfigJSON: types.StringValue(`{"workflowId":321561144,"enabled":true}`),
+		Selector:   types.StringValue("true"),
+	}}
+	remote := []WorkflowJobAgentModel{{
+		Name:       types.StringValue("managed-spec"),
+		Ref:        types.StringValue("agent-id"),
+		Config:     types.MapNull(types.StringType),
+		ConfigJSON: types.StringValue(`{"workflowId":321561145,"enabled":false}`),
+		Selector:   types.StringValue("true"),
+	}}
+
+	val, err := workflowJobAgentsToValue(remote)
+	if err != nil {
+		t.Fatalf("workflowJobAgentsToValue: %v", err)
+	}
+	out := workflowJobAgentsFromValue(val, prior)
+	if len(out) != 1 {
+		t.Fatalf("got %d agents, want 1", len(out))
+	}
+	const want = `{"enabled":false,"workflowId":321561145}`
+	if got := out[0].ConfigJSON.ValueString(); got != want {
+		t.Fatalf("config_json = %q, want remote value %q", got, want)
 	}
 }
 

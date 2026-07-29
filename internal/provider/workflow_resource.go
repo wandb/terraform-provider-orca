@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"reflect"
 
 	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
 	connect "connectrpc.com/connect"
@@ -373,9 +374,10 @@ func workflowJobAgentsFromValue(val *structpb.Value, prior []WorkflowJobAgentMod
 			Ref:      types.StringValue(ref),
 			Selector: types.StringValue(stringFromAny(obj["selector"])),
 		}
-		if workflowJobAgentUsedConfigJSON(prior, i, name, ref) || !workflowConfigContainsOnlyStrings(config) {
+		priorConfigJSON := workflowJobAgentPriorConfigJSON(prior, i, name, ref)
+		if !priorConfigJSON.IsNull() || !workflowConfigContainsOnlyStrings(config) {
 			agent.Config = types.MapNull(types.StringType)
-			agent.ConfigJSON = workflowConfigJSONValue(config)
+			agent.ConfigJSON = workflowConfigJSONValue(config, priorConfigJSON)
 		} else {
 			agent.Config = interfaceMapStringValue(config)
 			agent.ConfigJSON = types.StringNull()
@@ -385,19 +387,25 @@ func workflowJobAgentsFromValue(val *structpb.Value, prior []WorkflowJobAgentMod
 	return agents
 }
 
-func workflowJobAgentUsedConfigJSON(prior []WorkflowJobAgentModel, index int, name, ref string) bool {
+func workflowJobAgentPriorConfigJSON(prior []WorkflowJobAgentModel, index int, name, ref string) types.String {
 	if index < len(prior) {
 		candidate := prior[index]
 		if candidate.Name.ValueString() == name && candidate.Ref.ValueString() == ref {
-			return !candidate.ConfigJSON.IsNull() && !candidate.ConfigJSON.IsUnknown()
+			if !candidate.ConfigJSON.IsNull() && !candidate.ConfigJSON.IsUnknown() {
+				return candidate.ConfigJSON
+			}
+			return types.StringNull()
 		}
 	}
 	for _, candidate := range prior {
 		if candidate.Name.ValueString() == name && candidate.Ref.ValueString() == ref {
-			return !candidate.ConfigJSON.IsNull() && !candidate.ConfigJSON.IsUnknown()
+			if !candidate.ConfigJSON.IsNull() && !candidate.ConfigJSON.IsUnknown() {
+				return candidate.ConfigJSON
+			}
+			return types.StringNull()
 		}
 	}
-	return false
+	return types.StringNull()
 }
 
 func workflowConfigContainsOnlyStrings(config map[string]any) bool {
@@ -409,7 +417,15 @@ func workflowConfigContainsOnlyStrings(config map[string]any) bool {
 	return true
 }
 
-func workflowConfigJSONValue(config map[string]any) types.String {
+func workflowConfigJSONValue(config map[string]any, prior types.String) types.String {
+	if !prior.IsNull() && !prior.IsUnknown() {
+		var priorConfig map[string]any
+		if err := json.Unmarshal([]byte(prior.ValueString()), &priorConfig); err == nil &&
+			reflect.DeepEqual(priorConfig, config) {
+			return prior
+		}
+	}
+
 	encoded, err := json.Marshal(config)
 	if err != nil {
 		return types.StringValue("{}")
