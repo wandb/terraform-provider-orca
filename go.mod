@@ -3,7 +3,7 @@ module github.com/ctrlplanedev/terraform-provider-ctrlplane
 go 1.26.4
 
 require (
-	buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260708160625-b7705c9af3ed.1
+	buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260728172723-20e9681c4d90.1
 	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260728172723-20e9681c4d90.1
 	connectrpc.com/connect v1.20.0
 	github.com/google/cel-go v0.28.1
@@ -12,6 +12,7 @@ require (
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
+	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217
 	google.golang.org/protobuf v1.36.11
 )
 
@@ -70,7 +71,6 @@ require (
 	golang.org/x/text v0.37.0 // indirect
 	golang.org/x/tools v0.44.0 // indirect
 	google.golang.org/appengine v1.6.8 // indirect
-	google.golang.org/genproto/googleapis/api v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20251202230838-ff82c1b0f217 // indirect
 	google.golang.org/grpc v1.79.3 // indirect
 )
