@@ -123,8 +123,21 @@ func TestWorkflowJobAgentConfigPreservesNumericWorkflowID(t *testing.T) {
 		t.Fatalf("workflowJobAgentsToValue: %v", err)
 	}
 
-	agents := val.AsInterface().([]any)
-	config := agents[0].(map[string]any)["config"].(map[string]any)
+	agents, ok := val.AsInterface().([]any)
+	if !ok {
+		t.Fatalf("job agents = %T, want []any", val.AsInterface())
+	}
+	if len(agents) != 1 {
+		t.Fatalf("got %d job agents, want 1", len(agents))
+	}
+	agent, ok := agents[0].(map[string]any)
+	if !ok {
+		t.Fatalf("job agent = %T, want map[string]any", agents[0])
+	}
+	config, ok := agent["config"].(map[string]any)
+	if !ok {
+		t.Fatalf("config = %T, want map[string]any", agent["config"])
+	}
 	workflowID, ok := config["workflowId"].(float64)
 	if !ok {
 		t.Fatalf("workflowId = %T(%v), want numeric protobuf value", config["workflowId"], config["workflowId"])
