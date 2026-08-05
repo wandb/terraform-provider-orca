@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260728172723-20e9681c4d90.1
-	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260728172723-20e9681c4d90.1
+	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260804200216-ea4bdd9b1001.1
 	connectrpc.com/connect v1.20.0
 	github.com/google/cel-go v0.30.0
 	github.com/google/uuid v1.6.0
