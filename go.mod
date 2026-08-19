@@ -4,7 +4,7 @@ go 1.26.4
 
 require (
 	buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go v1.20.0-20260728172723-20e9681c4d90.1
-	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.11-20260728172723-20e9681c4d90.1
+	buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go v1.36.12-20260818190452-fd4d93048409.1
 	connectrpc.com/connect v1.20.0
 	github.com/google/cel-go v0.30.0
 	github.com/google/uuid v1.6.0
@@ -13,7 +13,7 @@ require (
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260727163830-6c54dddc4772
-	google.golang.org/protobuf v1.36.11
+	google.golang.org/protobuf v1.36.12
 )
 
 require (
