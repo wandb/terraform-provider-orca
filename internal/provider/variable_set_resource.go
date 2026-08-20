@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -212,7 +212,7 @@ func (r *VariableSetResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	vs := got.Msg
+	vs := got.Msg.GetVariableSet()
 	if vs.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read variable set", "Empty response from server")
 		return

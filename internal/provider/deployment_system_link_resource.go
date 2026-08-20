@@ -6,7 +6,7 @@ import (
 	"context"
 	"strings"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -107,7 +107,7 @@ func (r *DeploymentSystemLinkResource) Create(ctx context.Context, req resource.
 	systemID := data.SystemID.ValueString()
 	deploymentID := data.DeploymentID.ValueString()
 
-	_, err := r.workspace.System.LinkDeploymentToSystem(ctx, connect.NewRequest(&apiv1.DeploymentSystemLinkRequest{
+	_, err := r.workspace.System.LinkDeploymentToSystem(ctx, connect.NewRequest(&apiv1.LinkDeploymentToSystemRequest{
 		WorkspaceId:  r.workspace.WorkspaceID(),
 		SystemId:     systemID,
 		DeploymentId: deploymentID,
@@ -132,7 +132,7 @@ func (r *DeploymentSystemLinkResource) Read(ctx context.Context, req resource.Re
 	systemID := data.SystemID.ValueString()
 	deploymentID := data.DeploymentID.ValueString()
 
-	got, err := r.workspace.System.GetDeploymentSystemLink(ctx, connect.NewRequest(&apiv1.DeploymentSystemLinkRequest{
+	got, err := r.workspace.System.GetDeploymentSystemLink(ctx, connect.NewRequest(&apiv1.GetDeploymentSystemLinkRequest{
 		WorkspaceId:  r.workspace.WorkspaceID(),
 		SystemId:     systemID,
 		DeploymentId: deploymentID,
@@ -168,7 +168,7 @@ func (r *DeploymentSystemLinkResource) Delete(ctx context.Context, req resource.
 		return
 	}
 
-	_, err := r.workspace.System.UnlinkDeploymentFromSystem(ctx, connect.NewRequest(&apiv1.DeploymentSystemLinkRequest{
+	_, err := r.workspace.System.UnlinkDeploymentFromSystem(ctx, connect.NewRequest(&apiv1.UnlinkDeploymentFromSystemRequest{
 		WorkspaceId:  r.workspace.WorkspaceID(),
 		SystemId:     data.SystemID.ValueString(),
 		DeploymentId: data.DeploymentID.ValueString(),

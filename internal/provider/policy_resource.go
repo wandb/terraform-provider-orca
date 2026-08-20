@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"time"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/google/uuid"
@@ -627,7 +627,7 @@ func (r *PolicyResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	policy := created.Msg
+	policy := created.Msg.GetPolicy()
 	if policy.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to create policy", "Empty policy ID in response")
 		return
@@ -662,7 +662,7 @@ func (r *PolicyResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	policy := got.Msg
+	policy := got.Msg.GetPolicy()
 	if policy.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read policy", "Empty policy ID in response")
 		return
@@ -722,7 +722,7 @@ func (r *PolicyResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	policy := upserted.Msg
+	policy := upserted.Msg.GetPolicy()
 	if policy.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to update policy", "Empty policy ID in response")
 		return

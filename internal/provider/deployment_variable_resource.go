@@ -8,7 +8,7 @@ import (
 	"math"
 	"math/big"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -99,7 +99,7 @@ func (r *DeploymentVariableResource) Create(ctx context.Context, req resource.Cr
 		return
 	}
 
-	applyDeploymentVariable(&data, created.Msg)
+	applyDeploymentVariable(&data, created.Msg.GetVariable())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -161,7 +161,7 @@ func (r *DeploymentVariableResource) Update(ctx context.Context, req resource.Up
 		return
 	}
 
-	applyDeploymentVariable(&data, updated.Msg)
+	applyDeploymentVariable(&data, updated.Msg.GetVariable())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }

@@ -6,7 +6,7 @@ package provider
 import (
 	"context"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -191,7 +191,7 @@ func (r *SecretResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	resp.Diagnostics.Append(applySecret(ctx, &data, created.Msg)...)
+	resp.Diagnostics.Append(applySecret(ctx, &data, created.Msg.GetSecret())...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -215,7 +215,7 @@ func (r *SecretResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	resp.Diagnostics.Append(applySecret(ctx, &data, got.Msg)...)
+	resp.Diagnostics.Append(applySecret(ctx, &data, got.Msg.GetSecret())...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -252,7 +252,7 @@ func (r *SecretResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	resp.Diagnostics.Append(applySecret(ctx, &data, updated.Msg)...)
+	resp.Diagnostics.Append(applySecret(ctx, &data, updated.Msg.GetSecret())...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 

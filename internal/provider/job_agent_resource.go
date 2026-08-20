@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -337,7 +337,7 @@ func (r *JobAgentResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	jobAgent := got.Msg
+	jobAgent := got.Msg.GetJobAgent()
 	if jobAgent.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read job agent", "Empty job agent ID in response")
 		return
@@ -438,7 +438,7 @@ func (r *JobAgentResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	applyJobAgent(&data, got.Msg)
+	applyJobAgent(&data, got.Msg.GetJobAgent())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }

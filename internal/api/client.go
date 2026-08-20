@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	apiv1connect "buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go/ctrlplane/api/v1/apiv1connect"
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1connect "buf.build/gen/go/orca/orca/connectrpc/go/orca/api/v1/apiv1connect"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/google/uuid"
 )
@@ -163,7 +163,7 @@ func (c *WorkspaceClient) resolveWorkspaceID(ctx context.Context, workspace stri
 		return uuid.Nil, err
 	}
 
-	ws := resp.Msg
+	ws := resp.Msg.GetWorkspace()
 	if ws == nil || ws.GetId() == "" {
 		return uuid.Nil, errors.New("workspace not found")
 	}

@@ -6,7 +6,7 @@ import (
 	"context"
 	"strings"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -107,7 +107,7 @@ func (r *EnvironmentSystemLinkResource) Create(ctx context.Context, req resource
 	systemID := data.SystemID.ValueString()
 	environmentID := data.EnvironmentID.ValueString()
 
-	_, err := r.workspace.System.LinkEnvironmentToSystem(ctx, connect.NewRequest(&apiv1.EnvironmentSystemLinkRequest{
+	_, err := r.workspace.System.LinkEnvironmentToSystem(ctx, connect.NewRequest(&apiv1.LinkEnvironmentToSystemRequest{
 		WorkspaceId:   r.workspace.WorkspaceID(),
 		SystemId:      systemID,
 		EnvironmentId: environmentID,
@@ -132,7 +132,7 @@ func (r *EnvironmentSystemLinkResource) Read(ctx context.Context, req resource.R
 	systemID := data.SystemID.ValueString()
 	environmentID := data.EnvironmentID.ValueString()
 
-	got, err := r.workspace.System.GetEnvironmentSystemLink(ctx, connect.NewRequest(&apiv1.EnvironmentSystemLinkRequest{
+	got, err := r.workspace.System.GetEnvironmentSystemLink(ctx, connect.NewRequest(&apiv1.GetEnvironmentSystemLinkRequest{
 		WorkspaceId:   r.workspace.WorkspaceID(),
 		SystemId:      systemID,
 		EnvironmentId: environmentID,
@@ -168,7 +168,7 @@ func (r *EnvironmentSystemLinkResource) Delete(ctx context.Context, req resource
 		return
 	}
 
-	_, err := r.workspace.System.UnlinkEnvironmentFromSystem(ctx, connect.NewRequest(&apiv1.EnvironmentSystemLinkRequest{
+	_, err := r.workspace.System.UnlinkEnvironmentFromSystem(ctx, connect.NewRequest(&apiv1.UnlinkEnvironmentFromSystemRequest{
 		WorkspaceId:   r.workspace.WorkspaceID(),
 		SystemId:      data.SystemID.ValueString(),
 		EnvironmentId: data.EnvironmentID.ValueString(),

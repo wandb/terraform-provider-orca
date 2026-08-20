@@ -5,7 +5,7 @@ package provider
 import (
 	"context"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -94,7 +94,7 @@ func (r *EnvironmentResource) Create(ctx context.Context, req resource.CreateReq
 		return
 	}
 
-	applyEnvironment(&data, got.Msg)
+	applyEnvironment(&data, got.Msg.GetEnvironment())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -139,7 +139,7 @@ func (r *EnvironmentResource) Read(ctx context.Context, req resource.ReadRequest
 		return
 	}
 
-	env := got.Msg
+	env := got.Msg.GetEnvironment()
 	if env.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read environment", "Empty environment ID in response")
 		return
@@ -248,7 +248,7 @@ func (r *EnvironmentResource) Update(ctx context.Context, req resource.UpdateReq
 		return
 	}
 
-	applyEnvironment(&data, got.Msg)
+	applyEnvironment(&data, got.Msg.GetEnvironment())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
