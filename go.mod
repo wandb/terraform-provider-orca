@@ -6,7 +6,7 @@ require (
 	buf.build/gen/go/orca/orca/connectrpc/go v1.20.0-20260820182702-5c4761607ae5.1
 	buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260820182702-5c4761607ae5.1
 	connectrpc.com/connect v1.20.0
-	github.com/google/cel-go v0.30.0
+	github.com/google/cel-go v0.31.0
 	github.com/google/uuid v1.6.0
 	github.com/gosimple/slug v1.15.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
