@@ -3,7 +3,7 @@
 #
 # Reads url / api_key / workspace from terraform.tfvars, pulls the workflow ID
 # from Terraform state, resolves the workspace slug to its UUID, then triggers a
-# run via the Ctrlplane Connect RPC (WorkflowService/CreateWorkflowRun).
+# run via the Orca Connect RPC (WorkflowService/CreateWorkflowRun).
 #
 # Usage:
 #   ./kickoff.sh [NAME]
@@ -51,8 +51,8 @@ WORKFLOW_ID=$(terraform state pull \
 if [[ "$WORKSPACE" =~ ^[0-9a-fA-F-]{36}$ ]]; then
   WORKSPACE_ID="$WORKSPACE"
 else
-  WORKSPACE_ID=$(post "ctrlplane.api.v1.WorkspaceService/GetWorkspaceBySlug" \
-    "$(jq -nc --arg slug "$WORKSPACE" '{slug:$slug}')" | jq -r '.id')
+  WORKSPACE_ID=$(post "orca.api.v1.WorkspaceService/GetWorkspaceBySlug" \
+    "$(jq -nc --arg slug "$WORKSPACE" '{slug:$slug}')" | jq -r '.workspace.id')
 fi
 [ -n "$WORKSPACE_ID" ] && [ "$WORKSPACE_ID" != "null" ] \
   || { echo "error: could not resolve workspace '$WORKSPACE'" >&2; exit 1; }
@@ -66,4 +66,4 @@ BODY=$(jq -nc \
   '{workspaceId:$ws, workflowId:$wf, inputs:{name:$name, wandb_version:$ver}}')
 
 echo "Triggering workflow $WORKFLOW_ID (name=$NAME, wandb_version=$WANDB_VERSION)..." >&2
-post "ctrlplane.api.v1.WorkflowService/CreateWorkflowRun" "$BODY" | jq .
+post "orca.api.v1.WorkflowService/CreateWorkflowRun" "$BODY" | jq .
