@@ -7,8 +7,8 @@ default:
 
 # Pin both BSR gen modules to the newest pushed version and tidy.
 buf-update:
-    go get buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go@latest
-    go get buf.build/gen/go/ctrlplane/ctrlplane/connectrpc/go@latest
+    go get buf.build/gen/go/orca/orca/protocolbuffers/go@latest
+    go get buf.build/gen/go/orca/orca/connectrpc/go@latest
     go mod tidy
 
 
@@ -17,4 +17,3 @@ verify:
     go build ./...
     go vet ./...
     go test ./...
-

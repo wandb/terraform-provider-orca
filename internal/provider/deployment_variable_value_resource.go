@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/google/uuid"
@@ -203,7 +203,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		return
 	}
 
-	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg)...)
+	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -231,7 +231,7 @@ func (r *DeploymentVariableValueResource) Read(ctx context.Context, req resource
 		return
 	}
 
-	value := got.Msg
+	value := got.Msg.GetValue()
 	if value.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read deployment variable value", "Empty response from server")
 		return
@@ -302,7 +302,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg)...)
+	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
 	if resp.Diagnostics.HasError() {
 		return
 	}

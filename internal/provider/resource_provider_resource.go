@@ -8,7 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -147,7 +147,7 @@ func (r *ResourceProviderResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	providerID := upserted.Msg.GetId()
+	providerID := upserted.Msg.GetResourceProvider().GetId()
 	if providerID == "" {
 		resp.Diagnostics.AddError("Failed to create resource provider", "Empty resource provider ID in response")
 		return
@@ -186,7 +186,7 @@ func (r *ResourceProviderResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	provider := providerResp.Msg
+	provider := providerResp.Msg.GetResourceProvider()
 	if provider.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read resource provider", "Empty resource provider ID in response")
 		return
@@ -241,7 +241,7 @@ func (r *ResourceProviderResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	if id := upserted.Msg.GetId(); id != "" {
+	if id := upserted.Msg.GetResourceProvider().GetId(); id != "" {
 		data.ID = types.StringValue(id)
 	}
 

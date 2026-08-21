@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"reflect"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -161,7 +161,7 @@ func (r *WorkflowResource) Create(ctx context.Context, req resource.CreateReques
 		return
 	}
 
-	setWorkflowModelFromProto(&data, created.Msg)
+	setWorkflowModelFromProto(&data, created.Msg.GetWorkflow())
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 
@@ -185,7 +185,7 @@ func (r *WorkflowResource) Read(ctx context.Context, req resource.ReadRequest, r
 		return
 	}
 
-	setWorkflowModelFromProto(&data, got.Msg)
+	setWorkflowModelFromProto(&data, got.Msg.GetWorkflow())
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -221,7 +221,7 @@ func (r *WorkflowResource) Update(ctx context.Context, req resource.UpdateReques
 		return
 	}
 
-	setWorkflowModelFromProto(&data, updated.Msg)
+	setWorkflowModelFromProto(&data, updated.Msg.GetWorkflow())
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
 

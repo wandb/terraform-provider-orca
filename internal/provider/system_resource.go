@@ -5,7 +5,7 @@ package provider
 import (
 	"context"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -92,7 +92,7 @@ func (r *SystemResource) Create(ctx context.Context, req resource.CreateRequest,
 		return
 	}
 
-	applySystem(&data, got.Msg)
+	applySystem(&data, got.Msg.GetSystem())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }
@@ -137,7 +137,7 @@ func (r *SystemResource) Read(ctx context.Context, req resource.ReadRequest, res
 		return
 	}
 
-	system := got.Msg
+	system := got.Msg.GetSystem()
 	if system.GetId() == "" {
 		resp.Diagnostics.AddError("Failed to read system", "Empty system ID in response")
 		return
@@ -235,7 +235,7 @@ func (r *SystemResource) Update(ctx context.Context, req resource.UpdateRequest,
 		return
 	}
 
-	applySystem(&data, got.Msg)
+	applySystem(&data, got.Msg.GetSystem())
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, data)...)
 }

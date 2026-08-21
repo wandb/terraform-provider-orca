@@ -6,7 +6,7 @@ package provider
 import (
 	"context"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	providervalidator "github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/validator"
@@ -122,7 +122,7 @@ func (r *SecretProviderResource) Create(ctx context.Context, req resource.Create
 		return
 	}
 
-	provider := created.Msg
+	provider := created.Msg.GetSecretProvider()
 	data.ID = types.StringValue(provider.GetId())
 	data.Name = types.StringValue(provider.GetName())
 	data.Type = types.StringValue(provider.GetType())
@@ -150,7 +150,7 @@ func (r *SecretProviderResource) Read(ctx context.Context, req resource.ReadRequ
 		return
 	}
 
-	provider := got.Msg
+	provider := got.Msg.GetSecretProvider()
 	data.ID = types.StringValue(provider.GetId())
 	data.Name = types.StringValue(provider.GetName())
 	data.Type = types.StringValue(provider.GetType())
@@ -187,7 +187,7 @@ func (r *SecretProviderResource) Update(ctx context.Context, req resource.Update
 		return
 	}
 
-	provider := updated.Msg
+	provider := updated.Msg.GetSecretProvider()
 	if id := provider.GetId(); id != "" {
 		data.ID = types.StringValue(id)
 	}

@@ -5,7 +5,7 @@ package provider
 import (
 	"context"
 
-	apiv1 "buf.build/gen/go/ctrlplane/ctrlplane/protocolbuffers/go/ctrlplane/api/v1"
+	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -136,7 +136,7 @@ func (r *RelationshipRuleResource) Create(ctx context.Context, req resource.Crea
 		return
 	}
 
-	rule := created.Msg
+	rule := created.Msg.GetRelationshipRule()
 	data.ID = types.StringValue(rule.GetId())
 	data.Name = types.StringValue(rule.GetName())
 	data.Reference = types.StringValue(rule.GetReference())
@@ -167,7 +167,7 @@ func (r *RelationshipRuleResource) Read(ctx context.Context, req resource.ReadRe
 		return
 	}
 
-	rule := got.Msg
+	rule := got.Msg.GetRelationshipRule()
 	data.ID = types.StringValue(rule.GetId())
 	data.Name = types.StringValue(rule.GetName())
 	data.Reference = types.StringValue(rule.GetReference())
@@ -211,7 +211,7 @@ func (r *RelationshipRuleResource) Update(ctx context.Context, req resource.Upda
 		return
 	}
 
-	rule := upserted.Msg
+	rule := upserted.Msg.GetRelationshipRule()
 	if id := rule.GetId(); id != "" {
 		data.ID = types.StringValue(id)
 	}
