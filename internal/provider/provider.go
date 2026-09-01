@@ -148,7 +148,9 @@ func (p *CtrlplaneProvider) DataSources(ctx context.Context) []func() datasource
 }
 
 func (p *CtrlplaneProvider) Functions(ctx context.Context) []func() function.Function {
-	return []func() function.Function{}
+	return []func() function.Function{
+		NewNormalizeSelectorFunction,
+	}
 }
 
 func (p *CtrlplaneProvider) Actions(ctx context.Context) []func() action.Action {
