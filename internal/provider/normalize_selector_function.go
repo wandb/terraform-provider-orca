@@ -11,7 +11,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/function"
 )
 
-var _ function.Function = &normalizeSelectorFunction{}
+var _ function.Function = (*normalizeSelectorFunction)(nil)
 
 var selectorWhitespace = regexp.MustCompile(`\s+`)
 
