@@ -1,8 +1,7 @@
 # Literal value example
 resource "ctrlplane_deployment_variable_value" "literal_example" {
-  deployment_id = ctrlplane_deployment.example.id
-  variable_id   = ctrlplane_deployment_variable.example.id
-  priority      = 1
+  variable_id = ctrlplane_deployment_variable.example.id
+  priority    = 1
 
   resource_selector = <<EOT
     resource.metadata["environment"] == "production"
@@ -13,9 +12,8 @@ resource "ctrlplane_deployment_variable_value" "literal_example" {
 
 # Reference value example
 resource "ctrlplane_deployment_variable_value" "reference_example" {
-  deployment_id = ctrlplane_deployment.example.id
-  variable_id   = ctrlplane_deployment_variable.example.id
-  priority      = 2
+  variable_id = ctrlplane_deployment_variable.example.id
+  priority    = 2
 
   resource_selector = <<EOT
     resource.kind == "kubernetes/cluster"

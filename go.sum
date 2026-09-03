@@ -1,7 +1,7 @@
-buf.build/gen/go/orca/orca/connectrpc/go v1.20.0-20260820182702-5c4761607ae5.1 h1:xRyF/KjZrbvk+MJn1vDq30Sq2hVTo1Wm/SbWEp13Z+Y=
-buf.build/gen/go/orca/orca/connectrpc/go v1.20.0-20260820182702-5c4761607ae5.1/go.mod h1:42q+iXOtO8q343zG1gEdAWpyGKOjPIsBWqDZnWKC0s4=
-buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260820182702-5c4761607ae5.1 h1:bBh2oR6LkMT0E1MaupLZw2wiXLUaalCYlKqnBaDktKY=
-buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260820182702-5c4761607ae5.1/go.mod h1:NtE5u5mSuPH0FMiIKTkAksOKstbvwnPLgI/dnyHgvWk=
+buf.build/gen/go/orca/orca/connectrpc/go v1.20.0-20260903194447-a924467be1b8.1 h1:TIHPVhrKuJRaEZZY5qixxfJb7uD5NUN6HQ13kRJG+Q8=
+buf.build/gen/go/orca/orca/connectrpc/go v1.20.0-20260903194447-a924467be1b8.1/go.mod h1:5DVM+5+kEUbS20eLov3K0nx57t8g55xlH7wbT1O2NL8=
+buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260903194447-a924467be1b8.1 h1:bWSbMKI4lsn1ZuwSvzePVGliNAACauMMDv46EjKCojg=
+buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260903194447-a924467be1b8.1/go.mod h1:NtE5u5mSuPH0FMiIKTkAksOKstbvwnPLgI/dnyHgvWk=
 cel.dev/expr v0.25.1 h1:1KrZg61W6TWSxuNZ37Xy49ps13NUovb66QLprthtwi4=
 cel.dev/expr v0.25.1/go.mod h1:hrXvqGP6G6gyx8UAHSHJ5RGk//1Oj5nXQ2NI02Nrsg4=
 connectrpc.com/connect v1.20.0 h1:6TNDAB+WeNd2uolWNlYczB5E0KNNaVMNUEx8JEUsPmQ=
