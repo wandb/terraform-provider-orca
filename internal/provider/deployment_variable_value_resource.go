@@ -4,11 +4,13 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 
 	apiv1 "buf.build/gen/go/orca/orca/protocolbuffers/go/orca/api/v1"
 	connect "connectrpc.com/connect"
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
+	providervalidator "github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/validator"
 	"github.com/google/uuid"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
@@ -17,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
+	schemavalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 )
@@ -35,12 +38,25 @@ type DeploymentVariableValueResource struct {
 }
 
 type DeploymentVariableValueResourceModel struct {
-	ID               types.String   `tfsdk:"id"`
-	VariableId       types.String   `tfsdk:"variable_id"`
-	Priority         types.Int64    `tfsdk:"priority"`
-	ResourceSelector CELStringValue `tfsdk:"resource_selector"`
-	LiteralValue     types.Dynamic  `tfsdk:"literal_value"`
-	ReferenceValue   types.Object   `tfsdk:"reference_value"`
+	ID               types.String                          `tfsdk:"id"`
+	VariableId       types.String                          `tfsdk:"variable_id"`
+	Priority         types.Int64                           `tfsdk:"priority"`
+	ResourceSelector CELStringValue                        `tfsdk:"resource_selector"`
+	LiteralValue     types.Dynamic                         `tfsdk:"literal_value"`
+	ReferenceValue   types.Object                          `tfsdk:"reference_value"`
+	Statsig          []DeploymentVariableValueStatsigModel `tfsdk:"statsig"`
+	Custom           []DeploymentVariableValueCustomModel  `tfsdk:"custom"`
+}
+
+type DeploymentVariableValueStatsigModel struct {
+	ProviderID   types.String `tfsdk:"provider_id"`
+	GateKey      types.String `tfsdk:"gate_key"`
+	UserTemplate types.String `tfsdk:"user_template"`
+}
+
+type DeploymentVariableValueCustomModel struct {
+	ProviderID types.String `tfsdk:"provider_id"`
+	Config     types.String `tfsdk:"config"`
 }
 
 var referenceValueAttrTypes = map[string]attr.Type{
@@ -102,11 +118,11 @@ func (r *DeploymentVariableValueResource) Schema(ctx context.Context, req resour
 			},
 			"literal_value": schema.DynamicAttribute{
 				Optional:            true,
-				MarkdownDescription: "A literal value (string, number, boolean, or object). Conflicts with `reference_value`. Numbers are transmitted as double-precision floats, so integers larger than 2^53 lose precision — pass such values as strings.",
+				MarkdownDescription: "A literal value (string, number, boolean, or object). Conflicts with `reference_value`, `statsig`, and `custom`. Numbers are transmitted as double-precision floats, so integers larger than 2^53 lose precision — pass such values as strings.",
 			},
 			"reference_value": schema.SingleNestedAttribute{
 				Optional:            true,
-				MarkdownDescription: "A reference value pointing to a property on the matched resource. Conflicts with `literal_value`.",
+				MarkdownDescription: "A reference value pointing to a property on the matched resource. Conflicts with `literal_value`, `statsig`, and `custom`.",
 				Attributes: map[string]schema.Attribute{
 					"reference": schema.StringAttribute{
 						Required:            true,
@@ -116,6 +132,48 @@ func (r *DeploymentVariableValueResource) Schema(ctx context.Context, req resour
 						Required:            true,
 						ElementType:         types.StringType,
 						MarkdownDescription: "The path segments to the value in the referenced resource.",
+					},
+				},
+			},
+		},
+		Blocks: map[string]schema.Block{
+			"statsig": schema.ListNestedBlock{
+				MarkdownDescription: "Resolve this value from a Statsig feature gate.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"provider_id": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The ID of the Statsig external variable provider.",
+						},
+						"gate_key": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The Statsig feature gate key.",
+						},
+						"user_template": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The Statsig user template as a JSON object. Template expressions are evaluated for each release target.",
+							Validators: []schemavalidator.String{
+								providervalidator.NewJSONValidator(),
+							},
+						},
+					},
+				},
+			},
+			"custom": schema.ListNestedBlock{
+				MarkdownDescription: "Provider-neutral external variable query configuration.",
+				NestedObject: schema.NestedBlockObject{
+					Attributes: map[string]schema.Attribute{
+						"provider_id": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "The ID of the external variable provider.",
+						},
+						"config": schema.StringAttribute{
+							Required:            true,
+							MarkdownDescription: "Provider-specific query configuration as a JSON object.",
+							Validators: []schemavalidator.String{
+								providervalidator.NewJSONValidator(),
+							},
+						},
 					},
 				},
 			},
@@ -132,21 +190,27 @@ func (r *DeploymentVariableValueResource) ValidateConfig(ctx context.Context, re
 
 	hasLiteral := !data.LiteralValue.IsNull() && !data.LiteralValue.IsUnknown()
 	hasReference := !data.ReferenceValue.IsNull() && !data.ReferenceValue.IsUnknown()
+	valueCount := len(data.Statsig) + len(data.Custom)
+	if hasLiteral {
+		valueCount++
+	}
+	if hasReference {
+		valueCount++
+	}
 
-	if hasLiteral && hasReference {
-		resp.Diagnostics.AddAttributeError(
-			path.Root("literal_value"),
+	if valueCount > 1 {
+		resp.Diagnostics.AddError(
 			"Conflicting value types",
-			"Only one of literal_value or reference_value may be specified, not both.",
+			"Only one of literal_value, reference_value, statsig, or custom may be specified.",
 		)
 	}
 
-	if !hasLiteral && !hasReference {
+	if valueCount == 0 {
 		// Allow unknowns during plan - only error if both are definitively null
 		if !data.LiteralValue.IsUnknown() && !data.ReferenceValue.IsUnknown() {
 			resp.Diagnostics.AddError(
 				"Missing value",
-				"Exactly one of literal_value or reference_value must be specified.",
+				"Exactly one of literal_value, reference_value, statsig, or custom must be specified.",
 			)
 		}
 	}
@@ -165,7 +229,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		data.ID = types.StringValue(valueID)
 	}
 
-	protoValue, err := structpbValueFromModel(data)
+	protoValue, externalValue, err := deploymentVariableValuePayloadFromModel(data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to create deployment variable value", fmt.Sprintf("Failed to build value: %s", err.Error()))
 		return
@@ -180,6 +244,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		Priority:             data.Priority.ValueInt64(),
 		ResourceSelector:     selector,
 		Value:                protoValue,
+		External:             externalValue,
 	}))
 	if err != nil {
 		addConnectError(&resp.Diagnostics, "Failed to create deployment variable value", err)
@@ -203,7 +268,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		return
 	}
 
-	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
+	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -237,7 +302,7 @@ func (r *DeploymentVariableValueResource) Read(ctx context.Context, req resource
 		return
 	}
 
-	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, value)...)
+	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, value)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -247,12 +312,29 @@ func (r *DeploymentVariableValueResource) Read(ctx context.Context, req resource
 
 // applyDeploymentVariableValue maps a proto DeploymentVariableValue onto the
 // model (id, variable id, priority, resource_selector, and the value union).
-func applyDeploymentVariableValue(ctx context.Context, data *DeploymentVariableValueResourceModel, value *apiv1.DeploymentVariableValue) diag.Diagnostics {
+func (r *DeploymentVariableValueResource) applyDeploymentVariableValue(ctx context.Context, data *DeploymentVariableValueResourceModel, value *apiv1.DeploymentVariableValue) diag.Diagnostics {
+	var diags diag.Diagnostics
+
 	data.ID = types.StringValue(value.GetId())
 	data.VariableId = types.StringValue(value.GetDeploymentVariableId())
 	data.Priority = types.Int64Value(value.GetPriority())
 
 	data.ResourceSelector = optionalCELStringValue(value.GetResourceSelector())
+
+	if external := value.GetExternal(); external != nil {
+		provider, err := r.workspace.ExternalVariableProvider.GetExternalVariableProvider(ctx, connect.NewRequest(&apiv1.GetExternalVariableProviderRequest{
+			WorkspaceId: r.workspace.WorkspaceID(),
+			Id:          external.GetProviderId(),
+		}))
+		if err != nil {
+			addConnectError(&diags, "Failed to read external variable provider", err)
+			return diags
+		}
+		if err := setExternalValueOnModel(data, external, provider.Msg.GetExternalVariableProvider().GetType()); err != nil {
+			diags.AddError("Failed to read external deployment variable value", err.Error())
+		}
+		return diags
+	}
 
 	return setValueOnModel(ctx, data, value.GetValue())
 }
@@ -264,7 +346,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	protoValue, err := structpbValueFromModel(data)
+	protoValue, externalValue, err := deploymentVariableValuePayloadFromModel(data)
 	if err != nil {
 		resp.Diagnostics.AddError("Failed to update deployment variable value", fmt.Sprintf("Failed to build value: %s", err.Error()))
 		return
@@ -279,6 +361,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		Priority:             data.Priority.ValueInt64(),
 		ResourceSelector:     selector,
 		Value:                protoValue,
+		External:             externalValue,
 	}))
 	if err != nil {
 		addConnectError(&resp.Diagnostics, "Failed to update deployment variable value", err)
@@ -302,7 +385,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	resp.Diagnostics.Append(applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
+	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -325,6 +408,109 @@ func (r *DeploymentVariableValueResource) Delete(ctx context.Context, req resour
 		addConnectError(&resp.Diagnostics, "Failed to delete deployment variable value", err)
 		return
 	}
+}
+
+func deploymentVariableValuePayloadFromModel(data DeploymentVariableValueResourceModel) (*structpb.Value, *apiv1.ExternalVariableValue, error) {
+	external, err := externalVariableValueFromModel(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	if external != nil {
+		return nil, external, nil
+	}
+
+	value, err := structpbValueFromModel(data)
+	if err != nil {
+		return nil, nil, err
+	}
+	return value, nil, nil
+}
+
+func externalVariableValueFromModel(data DeploymentVariableValueResourceModel) (*apiv1.ExternalVariableValue, error) {
+	var providerID string
+	var config map[string]any
+
+	switch {
+	case len(data.Statsig) == 1:
+		statsig := data.Statsig[0]
+		userTemplate, err := jsonObjectFromString(statsig.UserTemplate)
+		if err != nil {
+			return nil, fmt.Errorf("invalid statsig user_template: %w", err)
+		}
+		providerID = statsig.ProviderID.ValueString()
+		config = map[string]any{
+			"key":          statsig.GateKey.ValueString(),
+			"userTemplate": userTemplate,
+		}
+	case len(data.Custom) == 1:
+		custom := data.Custom[0]
+		customConfig, err := jsonObjectFromString(custom.Config)
+		if err != nil {
+			return nil, fmt.Errorf("invalid custom config: %w", err)
+		}
+		providerID = custom.ProviderID.ValueString()
+		config = customConfig
+	case len(data.Statsig) == 0 && len(data.Custom) == 0:
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("only one statsig or custom block may be configured")
+	}
+
+	configStruct, err := structpb.NewStruct(config)
+	if err != nil {
+		return nil, fmt.Errorf("invalid external variable config: %w", err)
+	}
+	return &apiv1.ExternalVariableValue{
+		ProviderId: providerID,
+		Config:     configStruct,
+	}, nil
+}
+
+func setExternalValueOnModel(data *DeploymentVariableValueResourceModel, external *apiv1.ExternalVariableValue, providerType string) error {
+	data.LiteralValue = types.DynamicNull()
+	data.ReferenceValue = types.ObjectNull(referenceValueAttrTypes)
+	data.Statsig = nil
+	data.Custom = nil
+
+	if external == nil {
+		return fmt.Errorf("external variable value is missing")
+	}
+
+	config := map[string]any{}
+	if external.GetConfig() != nil {
+		config = external.GetConfig().AsMap()
+	}
+
+	if providerType == "statsig" {
+		gateKey, ok := config["key"].(string)
+		if !ok || gateKey == "" {
+			return fmt.Errorf("statsig config is missing key")
+		}
+		userTemplate, ok := config["userTemplate"]
+		if !ok {
+			return fmt.Errorf("statsig config is missing userTemplate")
+		}
+		userTemplateJSON, err := json.Marshal(userTemplate)
+		if err != nil {
+			return fmt.Errorf("encode statsig userTemplate: %w", err)
+		}
+		data.Statsig = []DeploymentVariableValueStatsigModel{{
+			ProviderID:   types.StringValue(external.GetProviderId()),
+			GateKey:      types.StringValue(gateKey),
+			UserTemplate: types.StringValue(string(userTemplateJSON)),
+		}}
+		return nil
+	}
+
+	configJSON, err := json.Marshal(config)
+	if err != nil {
+		return fmt.Errorf("encode custom external variable config: %w", err)
+	}
+	data.Custom = []DeploymentVariableValueCustomModel{{
+		ProviderID: types.StringValue(external.GetProviderId()),
+		Config:     types.StringValue(string(configJSON)),
+	}}
+	return nil
 }
 
 // structpbValueFromModel converts the Terraform model into the single
@@ -401,6 +587,8 @@ func structpbValueFromModel(data DeploymentVariableValueResourceModel) (*structp
 // as a reference value; anything else is treated as a literal value.
 func setValueOnModel(_ context.Context, data *DeploymentVariableValueResourceModel, value *structpb.Value) diag.Diagnostics {
 	var diags diag.Diagnostics
+	data.Statsig = nil
+	data.Custom = nil
 
 	if value == nil {
 		data.LiteralValue = types.DynamicNull()

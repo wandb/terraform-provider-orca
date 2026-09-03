@@ -1,0 +1,1 @@
+terraform import ctrlplane_external_variable_provider.statsig 00000000-0000-0000-0000-000000000000

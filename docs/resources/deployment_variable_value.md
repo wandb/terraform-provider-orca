@@ -22,13 +22,24 @@ Manages a deployment variable value override in Ctrlplane. A variable value prov
 
 ### Optional
 
-- `literal_value` (Dynamic) A literal value (string, number, boolean, or object). Conflicts with `reference_value`. Numbers are transmitted as double-precision floats, so integers larger than 2^53 lose precision — pass such values as strings.
-- `reference_value` (Attributes) A reference value pointing to a property on the matched resource. Conflicts with `literal_value`. (see [below for nested schema](#nestedatt--reference_value))
+- `custom` (Block List) Provider-neutral external variable query configuration. (see [below for nested schema](#nestedblock--custom))
+- `literal_value` (Dynamic) A literal value (string, number, boolean, or object). Conflicts with `reference_value`, `statsig`, and `custom`. Numbers are transmitted as double-precision floats, so integers larger than 2^53 lose precision — pass such values as strings.
+- `reference_value` (Attributes) A reference value pointing to a property on the matched resource. Conflicts with `literal_value`, `statsig`, and `custom`. (see [below for nested schema](#nestedatt--reference_value))
 - `resource_selector` (String) A CEL expression to select which resources this value applies to.
+- `statsig` (Block List) Resolve this value from a Statsig feature gate. (see [below for nested schema](#nestedblock--statsig))
 
 ### Read-Only
 
 - `id` (String) The ID of the deployment variable value.
+
+<a id="nestedblock--custom"></a>
+### Nested Schema for `custom`
+
+Required:
+
+- `config` (String) Provider-specific query configuration as a JSON object.
+- `provider_id` (String) The ID of the external variable provider.
+
 
 <a id="nestedatt--reference_value"></a>
 ### Nested Schema for `reference_value`
@@ -37,3 +48,13 @@ Required:
 
 - `path` (List of String) The path segments to the value in the referenced resource.
 - `reference` (String) The reference key.
+
+
+<a id="nestedblock--statsig"></a>
+### Nested Schema for `statsig`
+
+Required:
+
+- `gate_key` (String) The Statsig feature gate key.
+- `provider_id` (String) The ID of the Statsig external variable provider.
+- `user_template` (String) The Statsig user template as a JSON object. Template expressions are evaluated for each release target.

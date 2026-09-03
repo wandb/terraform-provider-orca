@@ -97,16 +97,17 @@ type WorkspaceClient struct {
 	ID  uuid.UUID
 	Url string
 
-	Resource       apiv1connect.ResourceServiceClient
-	System         apiv1connect.SystemServiceClient
-	Deployment     apiv1connect.DeploymentServiceClient
-	Policy         apiv1connect.PolicyServiceClient
-	Job            apiv1connect.JobServiceClient
-	Workflow       apiv1connect.WorkflowServiceClient
-	VariableSet    apiv1connect.VariableSetServiceClient
-	Workspace      apiv1connect.WorkspaceServiceClient
-	Secret         apiv1connect.SecretServiceClient
-	SecretProvider apiv1connect.SecretProviderServiceClient
+	Resource                 apiv1connect.ResourceServiceClient
+	System                   apiv1connect.SystemServiceClient
+	Deployment               apiv1connect.DeploymentServiceClient
+	Policy                   apiv1connect.PolicyServiceClient
+	Job                      apiv1connect.JobServiceClient
+	Workflow                 apiv1connect.WorkflowServiceClient
+	VariableSet              apiv1connect.VariableSetServiceClient
+	Workspace                apiv1connect.WorkspaceServiceClient
+	Secret                   apiv1connect.SecretServiceClient
+	SecretProvider           apiv1connect.SecretProviderServiceClient
+	ExternalVariableProvider apiv1connect.ExternalVariableProviderServiceClient
 }
 
 // WorkspaceID returns the workspace ID as a string, the form expected by the
@@ -127,17 +128,18 @@ func NewWorkspaceClient(endpoint string, apiKey string, workspace string) (*Work
 	opts := connect.WithInterceptors(retryInterceptor(), apiKeyInterceptor(apiKey))
 
 	c := &WorkspaceClient{
-		Url:            endpoint,
-		Resource:       apiv1connect.NewResourceServiceClient(httpClient, baseURL, opts),
-		System:         apiv1connect.NewSystemServiceClient(httpClient, baseURL, opts),
-		Deployment:     apiv1connect.NewDeploymentServiceClient(httpClient, baseURL, opts),
-		Policy:         apiv1connect.NewPolicyServiceClient(httpClient, baseURL, opts),
-		Job:            apiv1connect.NewJobServiceClient(httpClient, baseURL, opts),
-		Workflow:       apiv1connect.NewWorkflowServiceClient(httpClient, baseURL, opts),
-		VariableSet:    apiv1connect.NewVariableSetServiceClient(httpClient, baseURL, opts),
-		Workspace:      apiv1connect.NewWorkspaceServiceClient(httpClient, baseURL, opts),
-		Secret:         apiv1connect.NewSecretServiceClient(httpClient, baseURL, opts),
-		SecretProvider: apiv1connect.NewSecretProviderServiceClient(httpClient, baseURL, opts),
+		Url:                      endpoint,
+		Resource:                 apiv1connect.NewResourceServiceClient(httpClient, baseURL, opts),
+		System:                   apiv1connect.NewSystemServiceClient(httpClient, baseURL, opts),
+		Deployment:               apiv1connect.NewDeploymentServiceClient(httpClient, baseURL, opts),
+		Policy:                   apiv1connect.NewPolicyServiceClient(httpClient, baseURL, opts),
+		Job:                      apiv1connect.NewJobServiceClient(httpClient, baseURL, opts),
+		Workflow:                 apiv1connect.NewWorkflowServiceClient(httpClient, baseURL, opts),
+		VariableSet:              apiv1connect.NewVariableSetServiceClient(httpClient, baseURL, opts),
+		Workspace:                apiv1connect.NewWorkspaceServiceClient(httpClient, baseURL, opts),
+		Secret:                   apiv1connect.NewSecretServiceClient(httpClient, baseURL, opts),
+		SecretProvider:           apiv1connect.NewSecretProviderServiceClient(httpClient, baseURL, opts),
+		ExternalVariableProvider: apiv1connect.NewExternalVariableProviderServiceClient(httpClient, baseURL, opts),
 	}
 
 	id, err := c.resolveWorkspaceID(context.Background(), workspace)
