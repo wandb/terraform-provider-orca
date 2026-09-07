@@ -4,9 +4,10 @@ go 1.26.4
 
 require (
 	buf.build/gen/go/orca/orca/connectrpc/go v1.20.0-20260903194447-a924467be1b8.1
-	buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260903194447-a924467be1b8.1
+	buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260903194447-a924467be1b8.2
 	connectrpc.com/connect v1.20.0
 	github.com/google/cel-go v0.30.0
+	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/gosimple/slug v1.15.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
@@ -26,7 +27,6 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/go-test/deep v1.0.8 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/gosimple/unidecode v1.0.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-checkpoint v0.5.0 // indirect
