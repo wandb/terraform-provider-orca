@@ -228,6 +228,11 @@ func TestAccPolicyResource_addEnvironmentProgression(t *testing.T) {
 						tfjsonpath.New("environment_progression").AtSliceIndex(0).AtMapKey("created_at"),
 						knownvalue.NotNull(),
 					),
+					statecheck.ExpectKnownValue(
+						"ctrlplane_policy.test_progression",
+						tfjsonpath.New("environment_progression").AtSliceIndex(0).AtMapKey("require_verification_passed"),
+						knownvalue.Bool(true),
+					),
 				},
 			},
 			{
@@ -290,6 +295,7 @@ func testAccPolicyResourceEnvironmentProgressionConfig(name string, includeProgr
   environment_progression {
     depends_on_environment_selector = "environment.name == 'qa'"
     minimum_success_percentage      = 80
+    require_verification_passed     = true
   }
 `
 	}

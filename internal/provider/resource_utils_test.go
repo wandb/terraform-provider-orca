@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/google/cel-go/cel"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	exprpb "google.golang.org/genproto/googleapis/api/expr/v1alpha1"
 	"google.golang.org/protobuf/proto"
 )
@@ -117,5 +118,40 @@ func TestPolicyRulesFromModelPreservesCELText(t *testing.T) {
 	}
 	if got := rules[1].GetEnvironmentProgression().GetDependsOnEnvironmentSelector(); got != environmentSelector {
 		t.Fatalf("environment selector = %q, want %q", got, environmentSelector)
+	}
+}
+
+func TestPolicyRulesEnvironmentProgressionRequireVerificationPassedRoundTrip(t *testing.T) {
+	cases := []struct {
+		name string
+		in   types.Bool
+		want bool
+	}{
+		{name: "true", in: types.BoolValue(true), want: true},
+		{name: "false", in: types.BoolValue(false), want: false},
+		{name: "unset", in: types.BoolNull(), want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			rules, diags := policyRulesFromModel(PolicyResourceModel{
+				EnvironmentProgression: []PolicyEnvironmentProgression{{
+					DependsOnEnvironmentSelector: celStringValue("environment.name == 'qa'"),
+					RequireVerificationPassed:    tc.in,
+				}},
+			})
+			if diags.HasError() {
+				t.Fatalf("policyRulesFromModel() diagnostics: %v", diags)
+			}
+			if got := rules[0].GetEnvironmentProgression().GetRequireVerificationPassed(); got != tc.want {
+				t.Fatalf("proto require_verification_passed = %v, want %v", got, tc.want)
+			}
+			model, diags := policyRulesToModel(rules)
+			if diags.HasError() {
+				t.Fatalf("policyRulesToModel() diagnostics: %v", diags)
+			}
+			if got := model.EnvironmentProgression[0].RequireVerificationPassed.ValueBool(); got != tc.want {
+				t.Fatalf("model require_verification_passed = %v, want %v", got, tc.want)
+			}
+		})
 	}
 }

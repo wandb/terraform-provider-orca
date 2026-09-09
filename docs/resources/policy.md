@@ -100,6 +100,7 @@ Optional:
 - `maximum_age_hours` (Number) Maximum age in hours of dependency deployment before blocking progression
 - `minimum_soak_time_minutes` (Number) Minimum time in minutes to wait after the dependency environment is in a success state
 - `minimum_success_percentage` (Number) Minimum percentage of successful deployments required
+- `require_verification_passed` (Boolean) Only count a dependency deployment as successful if its verification passed (jobs without a verification still count)
 
 Read-Only:
 
