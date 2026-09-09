@@ -528,6 +528,12 @@ func (r *PolicyResource) Schema(ctx context.Context, req resource.SchemaRequest,
 							Optional:    true,
 							Description: "Maximum age in hours of dependency deployment before blocking progression",
 						},
+						"require_verification_passed": schema.BoolAttribute{
+							Optional:    true,
+							Computed:    true,
+							Description: "Only count a dependency deployment as successful if its verification passed (jobs without a verification still count)",
+							Default:     booldefault.StaticBool(false),
+						},
 					},
 				},
 			},
@@ -849,6 +855,7 @@ type PolicyEnvironmentProgression struct {
 	MinimumSuccessPercentage     types.Float64  `tfsdk:"minimum_success_percentage"`
 	MinimumSoakTimeMinutes       types.Int64    `tfsdk:"minimum_soak_time_minutes"`
 	MaximumAgeHours              types.Int64    `tfsdk:"maximum_age_hours"`
+	RequireVerificationPassed    types.Bool     `tfsdk:"require_verification_passed"`
 }
 
 type PolicyVerificationRule struct {
@@ -1112,6 +1119,7 @@ func policyRulesFromModel(data PolicyResourceModel) ([]*apiv1.PolicyRule, diag.D
 			val := int32(progression.MaximumAgeHours.ValueInt64())
 			rule.MaximumAgeHours = &val
 		}
+		rule.RequireVerificationPassed = progression.RequireVerificationPassed.ValueBool()
 		rules = append(rules, &apiv1.PolicyRule{
 			Id:                     selectorIDValue(progression.ID),
 			CreatedAt:              createdAtTimestamp(progression.CreatedAt),
@@ -1499,6 +1507,7 @@ func policyRulesToModel(rules []*apiv1.PolicyRule) (policyRulesModel, diag.Diagn
 				MinimumSuccessPercentage:     types.Float64Null(),
 				MinimumSoakTimeMinutes:       types.Int64Value(int64(progression.GetMinimumSoakTimeMinutes())),
 				MaximumAgeHours:              types.Int64Null(),
+				RequireVerificationPassed:    types.BoolValue(progression.GetRequireVerificationPassed()),
 			}
 			if progression.MinimumSuccessPercentage != nil {
 				model.MinimumSuccessPercentage = types.Float64Value(float64(progression.GetMinimumSuccessPercentage()))
