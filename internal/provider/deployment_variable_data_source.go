@@ -12,6 +12,7 @@ import (
 	"github.com/ctrlplanedev/terraform-provider-ctrlplane/internal/api"
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/datasource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 var _ datasource.DataSource = &DeploymentVariableDataSource{}
@@ -89,12 +90,14 @@ func (d *DeploymentVariableDataSource) Read(ctx context.Context, req datasource.
 				resp.Diagnostics.AddError("Failed to read deployment variable", "The matching deployment variable has an empty ID")
 				return
 			}
-			applyDeploymentVariable(&data, variable)
+			data.ID = types.StringValue(variable.GetId())
+			data.Description = optionalString(variable.GetDescription())
 			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 			return
 		}
 		offset += int32(len(items))
-		if len(items) == 0 || offset >= listed.Msg.GetTotal() {
+		total := listed.Msg.GetTotal()
+		if len(items) == 0 || (total > 0 && offset >= total) {
 			break
 		}
 	}

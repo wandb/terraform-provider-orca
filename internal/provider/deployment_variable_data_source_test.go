@@ -38,12 +38,16 @@ func TestDeploymentVariableDataSourceRead(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
 		pages     [][]*apiv1.DeploymentVariable
+		omitTotal bool
 		err       error
 		wantError string
 		wantCalls int
 	}{
 		{name: "found", pages: [][]*apiv1.DeploymentVariable{{target}}, wantCalls: 1},
 		{name: "later page exact match", pages: [][]*apiv1.DeploymentVariable{{{Id: "other", Key: "image_tag"}}, {target}}, wantCalls: 2},
+		{name: "later page without total", pages: [][]*apiv1.DeploymentVariable{{{Id: "other", Key: "OTHER"}}, {target}}, omitTotal: true, wantCalls: 2},
+		{name: "missing without total", pages: [][]*apiv1.DeploymentVariable{{{Id: "other", Key: "OTHER"}}, {}}, omitTotal: true, wantError: "Deployment variable not found", wantCalls: 2},
+		{name: "omitted deployment ID", pages: [][]*apiv1.DeploymentVariable{{{Id: "variable-id", Key: "IMAGE_TAG", Description: description}}}, wantCalls: 1},
 		{name: "missing", pages: [][]*apiv1.DeploymentVariable{{{Id: "other", Key: "OTHER"}}}, wantError: "Deployment variable not found", wantCalls: 1},
 		{name: "empty", pages: [][]*apiv1.DeploymentVariable{{}}, wantError: "Deployment variable not found", wantCalls: 1},
 		{name: "nil variable", pages: [][]*apiv1.DeploymentVariable{{nil}}, wantError: "Deployment variable not found", wantCalls: 1},
@@ -55,6 +59,9 @@ func TestDeploymentVariableDataSourceRead(t *testing.T) {
 			calls, offset, total := 0, int32(0), int32(0)
 			for _, page := range tc.pages {
 				total += int32(len(page))
+			}
+			if tc.omitTotal {
+				total = 0
 			}
 			workspaceID := uuid.New()
 			d := &DeploymentVariableDataSource{workspace: &api.WorkspaceClient{ID: workspaceID, Deployment: deploymentVariableLookupClient{list: func(req *apiv1.ListDeploymentVariablesRequest) (*apiv1.ListDeploymentVariablesResponse, error) {
