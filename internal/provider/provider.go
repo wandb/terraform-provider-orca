@@ -145,6 +145,7 @@ func (p *CtrlplaneProvider) DataSources(ctx context.Context) []func() datasource
 	return []func() datasource.DataSource{
 		NewEnvironmentDataSource,
 		NewDeploymentDataSource,
+		NewDeploymentVariableDataSource,
 	}
 }
 
