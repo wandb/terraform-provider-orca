@@ -7,9 +7,11 @@ require (
 	buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260903194447-a924467be1b8.1
 	connectrpc.com/connect v1.20.0
 	github.com/google/cel-go v0.30.0
+	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
 	github.com/gosimple/slug v1.15.0
 	github.com/hashicorp/terraform-plugin-framework v1.19.0
+	github.com/hashicorp/terraform-plugin-framework-validators v0.19.0
 	github.com/hashicorp/terraform-plugin-go v0.31.0
 	github.com/hashicorp/terraform-plugin-testing v1.16.0
 	google.golang.org/genproto/googleapis/api v0.0.0-20260727163830-6c54dddc4772
@@ -26,7 +28,6 @@ require (
 	github.com/fatih/color v1.18.0 // indirect
 	github.com/go-test/deep v1.0.8 // indirect
 	github.com/golang/protobuf v1.5.4 // indirect
-	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/gosimple/unidecode v1.0.1 // indirect
 	github.com/hashicorp/errwrap v1.1.0 // indirect
 	github.com/hashicorp/go-checkpoint v0.5.0 // indirect
