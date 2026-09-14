@@ -228,7 +228,20 @@ func attrValueFromInterface(value interface{}) (attr.Value, attr.Type, error) {
 		}
 		return obj, obj.Type(context.Background()), nil
 	case []interface{}:
-		return nil, nil, fmt.Errorf("unsupported value type []interface{}")
+		elemTypes := make([]attr.Type, len(v))
+		elements := make([]attr.Value, len(v))
+		for i, raw := range v {
+			converted, typ, err := attrValueFromInterface(raw)
+			if err != nil {
+				return nil, nil, err
+			}
+			elements[i], elemTypes[i] = converted, typ
+		}
+		tuple, diags := types.TupleValue(elemTypes, elements)
+		if diags.HasError() {
+			return nil, nil, fmt.Errorf("failed to build tuple value: %v", diags)
+		}
+		return tuple, tuple.Type(context.Background()), nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported value type %T", value)
 	}
