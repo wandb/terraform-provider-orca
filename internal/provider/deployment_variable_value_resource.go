@@ -269,7 +269,7 @@ func (r *DeploymentVariableValueResource) Create(ctx context.Context, req resour
 		return
 	}
 
-	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
+	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue(), false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -303,7 +303,7 @@ func (r *DeploymentVariableValueResource) Read(ctx context.Context, req resource
 		return
 	}
 
-	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, value)...)
+	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, value, true)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -313,7 +313,7 @@ func (r *DeploymentVariableValueResource) Read(ctx context.Context, req resource
 
 // applyDeploymentVariableValue maps a proto DeploymentVariableValue onto the
 // model (id, variable id, priority, resource_selector, and the value union).
-func (r *DeploymentVariableValueResource) applyDeploymentVariableValue(ctx context.Context, data *DeploymentVariableValueResourceModel, value *apiv1.DeploymentVariableValue) diag.Diagnostics {
+func (r *DeploymentVariableValueResource) applyDeploymentVariableValue(ctx context.Context, data *DeploymentVariableValueResourceModel, value *apiv1.DeploymentVariableValue, allowInference bool) diag.Diagnostics {
 	var diags diag.Diagnostics
 
 	data.ID = types.StringValue(value.GetId())
@@ -337,7 +337,7 @@ func (r *DeploymentVariableValueResource) applyDeploymentVariableValue(ctx conte
 		return diags
 	}
 
-	return setValueOnModel(ctx, data, value.GetValue())
+	return setValueOnModel(ctx, data, value.GetValue(), allowInference)
 }
 
 func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
@@ -386,7 +386,7 @@ func (r *DeploymentVariableValueResource) Update(ctx context.Context, req resour
 		return
 	}
 
-	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue())...)
+	resp.Diagnostics.Append(r.applyDeploymentVariableValue(ctx, &data, got.Msg.GetValue(), false)...)
 	if resp.Diagnostics.HasError() {
 		return
 	}
@@ -586,7 +586,9 @@ func structpbValueFromModel(data DeploymentVariableValueResourceModel) (*structp
 // setValueOnModel reads from the proto *structpb.Value and sets the appropriate
 // field on the model. A map carrying both "reference" and "path" keys is treated
 // as a reference value; anything else is treated as a literal value.
-func setValueOnModel(ctx context.Context, data *DeploymentVariableValueResourceModel, value *structpb.Value) diag.Diagnostics {
+// Read allows inference after incompatible type drift so refresh records the new
+// value. Create/Update must preserve the planned type and report mismatches.
+func setValueOnModel(ctx context.Context, data *DeploymentVariableValueResourceModel, value *structpb.Value, allowInference bool) diag.Diagnostics {
 	var diags diag.Diagnostics
 	data.Statsig = nil
 	data.Custom = nil
@@ -645,6 +647,9 @@ func setValueOnModel(ctx context.Context, data *DeploymentVariableValueResourceM
 		expected = underlying.Type(ctx)
 	}
 	attrValue, err := literalValueFromInterface(ctx, decoded, expected)
+	if err != nil && allowInference {
+		attrValue, _, err = attrValueFromInterface(decoded)
+	}
 	if err != nil {
 		diags.AddError("Failed to read literal value", err.Error())
 		return diags

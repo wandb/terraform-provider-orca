@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"google.golang.org/protobuf/proto"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -81,7 +82,7 @@ func TestDeploymentVariableValueRoundTrip(t *testing.T) {
 			}
 
 			var out DeploymentVariableValueResourceModel
-			if d := setValueOnModel(context.Background(), &out, val); d.HasError() {
+			if d := setValueOnModel(context.Background(), &out, val, false); d.HasError() {
 				t.Fatalf("setValueOnModel: %v", d)
 			}
 
@@ -128,7 +129,7 @@ func TestLiteralCollectionRoundTrip(t *testing.T) {
 			}
 			// Create/update start with the plan; subsequent refreshes start with state.
 			for i := 0; i < 2; i++ {
-				if d := setValueOnModel(ctx, &model, wire); d.HasError() {
+				if d := setValueOnModel(ctx, &model, wire, i > 0); d.HasError() {
 					t.Fatal(d)
 				}
 				if !model.LiteralValue.Equal(types.DynamicValue(literal)) {
@@ -147,7 +148,7 @@ func TestLiteralCollectionRead(t *testing.T) {
 	}
 	t.Run("refresh_reads_remote_changes", func(t *testing.T) {
 		model := DeploymentVariableValueResourceModel{LiteralValue: types.DynamicValue(types.ListValueMust(types.StringType, []attr.Value{types.StringValue("old")}))}
-		if d := setValueOnModel(ctx, &model, wire); d.HasError() {
+		if d := setValueOnModel(ctx, &model, wire, true); d.HasError() {
 			t.Fatal(d)
 		}
 		want := types.DynamicValue(types.ListValueMust(types.StringType, []attr.Value{types.StringValue("new")}))
@@ -157,7 +158,7 @@ func TestLiteralCollectionRead(t *testing.T) {
 	})
 	t.Run("import_infers_tuple", func(t *testing.T) {
 		var model DeploymentVariableValueResourceModel
-		if d := setValueOnModel(ctx, &model, wire); d.HasError() {
+		if d := setValueOnModel(ctx, &model, wire, true); d.HasError() {
 			t.Fatal(d)
 		}
 		want := types.DynamicValue(types.TupleValueMust([]attr.Type{types.StringType}, []attr.Value{types.StringValue("new")}))
@@ -165,14 +166,60 @@ func TestLiteralCollectionRead(t *testing.T) {
 			t.Fatalf("got %v, want %v", model.LiteralValue, want)
 		}
 	})
-	t.Run("conversion_error_preserves_state", func(t *testing.T) {
+	t.Run("strict_conversion_error_preserves_state", func(t *testing.T) {
 		before := types.DynamicValue(types.ListValueMust(types.StringType, nil))
 		model := DeploymentVariableValueResourceModel{LiteralValue: before}
-		if d := setValueOnModel(ctx, &model, structpb.NewStringValue("invalid")); !d.HasError() {
+		if d := setValueOnModel(ctx, &model, structpb.NewStringValue("invalid"), false); !d.HasError() {
 			t.Fatal("expected diagnostic")
 		}
 		if !model.LiteralValue.Equal(before) {
 			t.Fatal("conversion error overwrote literal state")
 		}
 	})
+}
+
+func TestLiteralValueIncompatibleDrift(t *testing.T) {
+	ctx := context.Background()
+	cases := map[string]struct {
+		before attr.Value
+		remote any
+	}{
+		"list_to_string":      {types.ListValueMust(types.StringType, nil), "changed"},
+		"string_to_list":      {types.StringValue("old"), []any{"new"}},
+		"list_element_type":   {types.ListValueMust(types.StringType, nil), []any{true}},
+		"tuple_length":        {types.TupleValueMust([]attr.Type{types.StringType}, []attr.Value{types.StringValue("old")}), []any{"one", "two"}},
+		"tuple_becomes_empty": {types.TupleValueMust([]attr.Type{types.StringType}, []attr.Value{types.StringValue("old")}), []any{}},
+		"object_shape":        {types.ObjectValueMust(map[string]attr.Type{"old": types.StringType}, map[string]attr.Value{"old": types.StringValue("value")}), map[string]any{"new": true}},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			wire, err := structpb.NewValue(tc.remote)
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := types.DynamicValue(tc.before)
+			strict := DeploymentVariableValueResourceModel{LiteralValue: before}
+			if d := setValueOnModel(ctx, &strict, wire, false); !d.HasError() {
+				t.Fatal("apply must reject incompatible types")
+			}
+			if !strict.LiteralValue.Equal(before) {
+				t.Fatal("failed conversion changed literal value")
+			}
+			refresh := DeploymentVariableValueResourceModel{LiteralValue: before}
+			if d := setValueOnModel(ctx, &refresh, wire, true); d.HasError() {
+				t.Fatalf("refresh failed to record drift: %v", d)
+			}
+			// Compare wire values to prove the entire remote value was retained.
+			roundTrip, err := structpbValueFromModel(refresh)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !proto.Equal(roundTrip, wire) {
+				t.Fatalf("got %v, want %v", roundTrip, wire)
+			}
+			if refresh.LiteralValue.Equal(before) {
+				t.Fatal("refresh retained stale state")
+			}
+		})
+	}
 }
