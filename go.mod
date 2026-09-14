@@ -3,9 +3,9 @@ module github.com/ctrlplanedev/terraform-provider-ctrlplane
 go 1.26.4
 
 require (
-	buf.build/gen/go/orca/orca/connectrpc/go v1.20.0-20260903194447-a924467be1b8.1
-	buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260903194447-a924467be1b8.1
-	connectrpc.com/connect v1.20.0
+	buf.build/gen/go/orca/orca/connectrpc/go v1.21.0-20260909161753-90346aaddbc0.1
+	buf.build/gen/go/orca/orca/protocolbuffers/go v1.36.12-20260909161753-90346aaddbc0.2
+	connectrpc.com/connect v1.21.0
 	github.com/google/cel-go v0.30.0
 	github.com/google/go-cmp v0.7.0
 	github.com/google/uuid v1.6.0
