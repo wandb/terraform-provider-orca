@@ -74,6 +74,27 @@ func TestAccDeploymentVariableValueResource(t *testing.T) {
 	})
 }
 
+// Exercise the exact dynamic list type Terraform must retain after apply.
+func TestAccDeploymentVariableValueResource_list(t *testing.T) {
+	name := fmt.Sprintf("tf-acc-list-%d", time.Now().UnixNano())
+	config := func(expression string) string {
+		return testAccDeploymentVariableValueResourceConfigLiteralExpression(name, 100, expression)
+	}
+	resource.Test(t, resource.TestCase{
+		PreCheck:                 func() { testAccPreCheck(t) },
+		ProtoV6ProviderFactories: testAccProtoV6ProviderFactories,
+		Steps: []resource.TestStep{
+			{Config: config(`tolist(["10.0.0.0/8", "192.168.0.0/16"])`),
+				Check: resource.TestCheckResourceAttr("ctrlplane_deployment_variable_value.test", "literal_value.#", "2")},
+			{RefreshState: true},
+			{Config: config(`tolist(["172.16.0.0/12"])`),
+				Check: resource.TestCheckResourceAttr("ctrlplane_deployment_variable_value.test", "literal_value.0", "172.16.0.0/12")},
+			{Config: config(`tolist([])`),
+				Check: resource.TestCheckResourceAttr("ctrlplane_deployment_variable_value.test", "literal_value.#", "0")},
+		},
+	})
+}
+
 func TestAccDeploymentVariableValueResource_reference(t *testing.T) {
 	name := fmt.Sprintf("tf-acc-varval-ref-%d", time.Now().UnixNano())
 
@@ -232,6 +253,10 @@ resource "ctrlplane_deployment_variable_value" "test" {
 // chain (system -> deployment -> deployment_variable -> deployment_variable_value)
 // using a literal_value.
 func testAccDeploymentVariableValueResourceConfigLiteral(name string, priority int64, literal string) string {
+	return testAccDeploymentVariableValueResourceConfigLiteralExpression(name, priority, fmt.Sprintf("%q", literal))
+}
+
+func testAccDeploymentVariableValueResourceConfigLiteralExpression(name string, priority int64, literal string) string {
 	return fmt.Sprintf(`
 %s
 resource "ctrlplane_system" "test" {
@@ -253,7 +278,7 @@ resource "ctrlplane_deployment_variable_value" "test" {
   variable_id       = ctrlplane_deployment_variable.test.id
   priority          = %d
   resource_selector = "resource.name == '%s'"
-  literal_value     = %q
+  literal_value     = %s
 }
 `, testAccProviderConfig(), name, name+"-deployment", name, name, priority, name, literal)
 }

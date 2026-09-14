@@ -9,6 +9,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
 // TestDeploymentVariableValueRoundTrip exercises the structpb.Value encoding
@@ -103,4 +104,75 @@ func TestStructpbValueFromModelRequiresOneOf(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when neither literal nor reference value is set")
 	}
+}
+
+func TestLiteralCollectionRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	strings := []attr.Value{types.StringValue("10.0.0.0/8"), types.StringValue("192.168.0.0/16")}
+	list := types.ListValueMust(types.StringType, strings)
+	cases := map[string]attr.Value{
+		"list":         list,
+		"empty_list":   types.ListValueMust(types.StringType, nil),
+		"set":          types.SetValueMust(types.StringType, strings),
+		"tuple":        types.TupleValueMust([]attr.Type{types.StringType, types.BoolType}, []attr.Value{strings[0], types.BoolValue(true)}),
+		"map":          types.MapValueMust(types.ListType{ElemType: types.StringType}, map[string]attr.Value{"ips": list}),
+		"object":       types.ObjectValueMust(map[string]attr.Type{"ips": types.ListType{ElemType: types.StringType}}, map[string]attr.Value{"ips": list}),
+		"null_element": types.ListValueMust(types.StringType, []attr.Value{types.StringNull()}),
+	}
+	for name, literal := range cases {
+		t.Run(name, func(t *testing.T) {
+			model := DeploymentVariableValueResourceModel{LiteralValue: types.DynamicValue(literal), ReferenceValue: types.ObjectNull(referenceValueAttrTypes)}
+			wire, err := structpbValueFromModel(model)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// Create/update start with the plan; subsequent refreshes start with state.
+			for i := 0; i < 2; i++ {
+				if d := setValueOnModel(ctx, &model, wire); d.HasError() {
+					t.Fatal(d)
+				}
+				if !model.LiteralValue.Equal(types.DynamicValue(literal)) {
+					t.Fatalf("round trip changed value/type: got %v, want %v", model.LiteralValue, literal)
+				}
+			}
+		})
+	}
+}
+
+func TestLiteralCollectionRead(t *testing.T) {
+	ctx := context.Background()
+	wire, err := structpb.NewValue([]any{"new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Run("refresh_reads_remote_changes", func(t *testing.T) {
+		model := DeploymentVariableValueResourceModel{LiteralValue: types.DynamicValue(types.ListValueMust(types.StringType, []attr.Value{types.StringValue("old")}))}
+		if d := setValueOnModel(ctx, &model, wire); d.HasError() {
+			t.Fatal(d)
+		}
+		want := types.DynamicValue(types.ListValueMust(types.StringType, []attr.Value{types.StringValue("new")}))
+		if !model.LiteralValue.Equal(want) {
+			t.Fatalf("got %v, want %v", model.LiteralValue, want)
+		}
+	})
+	t.Run("import_infers_tuple", func(t *testing.T) {
+		var model DeploymentVariableValueResourceModel
+		if d := setValueOnModel(ctx, &model, wire); d.HasError() {
+			t.Fatal(d)
+		}
+		want := types.DynamicValue(types.TupleValueMust([]attr.Type{types.StringType}, []attr.Value{types.StringValue("new")}))
+		if !model.LiteralValue.Equal(want) {
+			t.Fatalf("got %v, want %v", model.LiteralValue, want)
+		}
+	})
+	t.Run("conversion_error_preserves_state", func(t *testing.T) {
+		before := types.DynamicValue(types.ListValueMust(types.StringType, nil))
+		model := DeploymentVariableValueResourceModel{LiteralValue: before}
+		if d := setValueOnModel(ctx, &model, structpb.NewStringValue("invalid")); !d.HasError() {
+			t.Fatal("expected diagnostic")
+		}
+		if !model.LiteralValue.Equal(before) {
+			t.Fatal("conversion error overwrote literal state")
+		}
+	})
 }

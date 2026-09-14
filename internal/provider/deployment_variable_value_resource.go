@@ -21,6 +21,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	schemavalidator "github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tftypes"
 	structpb "google.golang.org/protobuf/types/known/structpb"
 )
 
@@ -585,7 +586,7 @@ func structpbValueFromModel(data DeploymentVariableValueResourceModel) (*structp
 // setValueOnModel reads from the proto *structpb.Value and sets the appropriate
 // field on the model. A map carrying both "reference" and "path" keys is treated
 // as a reference value; anything else is treated as a literal value.
-func setValueOnModel(_ context.Context, data *DeploymentVariableValueResourceModel, value *structpb.Value) diag.Diagnostics {
+func setValueOnModel(ctx context.Context, data *DeploymentVariableValueResourceModel, value *structpb.Value) diag.Diagnostics {
 	var diags diag.Diagnostics
 	data.Statsig = nil
 	data.Custom = nil
@@ -639,14 +640,113 @@ func setValueOnModel(_ context.Context, data *DeploymentVariableValueResourceMod
 		return diags
 	}
 
-	attrValue, _, err := attrValueFromInterface(decoded)
+	var expected attr.Type
+	if underlying := data.LiteralValue.UnderlyingValue(); underlying != nil {
+		expected = underlying.Type(ctx)
+	}
+	attrValue, err := literalValueFromInterface(ctx, decoded, expected)
 	if err != nil {
-		data.LiteralValue = types.DynamicNull()
-		data.ReferenceValue = types.ObjectNull(referenceValueAttrTypes)
+		diags.AddError("Failed to read literal value", err.Error())
 		return diags
 	}
 
 	data.LiteralValue = types.DynamicValue(attrValue)
 	data.ReferenceValue = types.ObjectNull(referenceValueAttrTypes)
 	return diags
+}
+
+// The API does not retain Terraform's list/tuple/set or map/object distinctions.
+// Use the plan (create/update) or prior state (read) to restore those types,
+// including nested collections. Imports without prior types infer tuples/objects.
+func literalValueFromInterface(ctx context.Context, raw any, expected attr.Type) (attr.Value, error) {
+	if expected == nil || expected.Equal(types.DynamicType) {
+		value, _, err := attrValueFromInterface(raw)
+		return value, err
+	}
+	if raw == nil {
+		return expected.ValueFromTerraform(ctx, tftypes.NewValue(expected.TerraformType(ctx), nil))
+	}
+	switch typ := expected.(type) {
+	case types.ListType, types.SetType, types.TupleType:
+		items, ok := raw.([]any)
+		if !ok {
+			return nil, fmt.Errorf("expected %s, got %T", expected, raw)
+		}
+		values := make([]attr.Value, len(items))
+		for i, item := range items {
+			var elemType attr.Type
+			switch typ := typ.(type) {
+			case types.ListType:
+				elemType = typ.ElemType
+			case types.SetType:
+				elemType = typ.ElemType
+			case types.TupleType:
+				if len(items) != len(typ.ElemTypes) {
+					return nil, fmt.Errorf("expected tuple with %d elements, got %d", len(typ.ElemTypes), len(items))
+				}
+				elemType = typ.ElemTypes[i]
+			}
+			value, err := literalValueFromInterface(ctx, item, elemType)
+			if err != nil {
+				return nil, fmt.Errorf("element %d: %w", i, err)
+			}
+			values[i] = value
+		}
+		var result attr.Value
+		var diags diag.Diagnostics
+		switch typ := typ.(type) {
+		case types.ListType:
+			result, diags = types.ListValue(typ.ElemType, values)
+		case types.SetType:
+			result, diags = types.SetValue(typ.ElemType, values)
+		case types.TupleType:
+			result, diags = types.TupleValue(typ.ElemTypes, values)
+		}
+		if diags.HasError() {
+			return nil, fmt.Errorf("invalid collection: %v", diags)
+		}
+		return result, nil
+	case types.MapType, types.ObjectType:
+		items, ok := raw.(map[string]any)
+		if !ok {
+			return nil, fmt.Errorf("expected %s, got %T", expected, raw)
+		}
+		values := make(map[string]attr.Value, len(items))
+		for key, item := range items {
+			var elemType attr.Type
+			switch typ := typ.(type) {
+			case types.MapType:
+				elemType = typ.ElemType
+			case types.ObjectType:
+				elemType = typ.AttrTypes[key]
+			}
+			value, err := literalValueFromInterface(ctx, item, elemType)
+			if err != nil {
+				return nil, fmt.Errorf("attribute %s: %w", key, err)
+			}
+			values[key] = value
+		}
+		var result attr.Value
+		var diags diag.Diagnostics
+		switch typ := typ.(type) {
+		case types.MapType:
+			result, diags = types.MapValue(typ.ElemType, values)
+		case types.ObjectType:
+			result, diags = types.ObjectValue(typ.AttrTypes, values)
+		}
+		if diags.HasError() {
+			return nil, fmt.Errorf("invalid object or map: %v", diags)
+		}
+		return result, nil
+	default:
+		value, _, err := attrValueFromInterface(raw)
+		if err != nil {
+			return nil, err
+		}
+		tfValue, err := value.ToTerraformValue(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return expected.ValueFromTerraform(ctx, tfValue)
+	}
 }
